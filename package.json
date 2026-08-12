@@ -1,0 +1,19 @@
+{
+  "name": "central-ramais",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run build -w @central/shared && concurrently -n api,web -c blue,green \"npm run dev -w api\" \"npm run dev -w web\"",
+    "build": "npm run build -w @central/shared && npm run build -w api && npm run build -w web",
+    "db:up": "docker compose up -d",
+    "db:migrate": "npm run migrate -w api",
+    "db:seed": "npm run seed -w api"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}
