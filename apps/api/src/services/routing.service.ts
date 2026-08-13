@@ -1,4 +1,3 @@
-import { prisma } from '../prisma';
 import * as conversations from '../repositories/conversations';
 import * as users from '../repositories/users';
 
@@ -13,11 +12,10 @@ export async function tryAssign(tenantId: string, conversationId: string): Promi
   const agents = await users.availableAgentsForDepartment(tenantId, conversation.departmentId);
   if (agents.length === 0) return false;
 
-  const lastAssignments = await prisma.conversation.groupBy({
-    by: ['assignedUserId'],
-    where: { tenantId, assignedUserId: { in: agents.map((a) => a.id) } },
-    _max: { assignedAt: true },
-  });
+  const lastAssignments = await conversations.lastAssignedAtByUsers(
+    tenantId,
+    agents.map((a) => a.id)
+  );
   const lastByUser = new Map(
     lastAssignments.map((r) => [r.assignedUserId, r._max.assignedAt?.getTime() ?? 0])
   );
