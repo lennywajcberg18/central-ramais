@@ -50,7 +50,12 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     },
   });
 
-  if (res.status === 401 && typeof window !== 'undefined') {
+  // Na tela de login o 401 é a resposta esperada de credencial errada, não uma
+  // sessão expirada. Redirecionar recarregaria a página e apagaria a mensagem
+  // de erro do formulário antes de o usuário conseguir lê-la.
+  const naTelaDeLogin = typeof window !== 'undefined' && window.location.pathname === '/login';
+
+  if (res.status === 401 && typeof window !== 'undefined' && !naTelaDeLogin) {
     clearSession();
     window.location.href = '/login';
     throw new ApiError(401, 'sessão expirada');
