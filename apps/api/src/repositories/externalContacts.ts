@@ -56,3 +56,11 @@ export function reassignLink(tenantId: string, id: string, entryLinkId: string) 
     data: { entryLinkId },
   });
 }
+
+export function countByLink(tenantId: string) {
+  return prisma.externalContact.groupBy({
+    by: ['entryLinkId'],
+    where: { tenantId },
+    _count: { id: true },
+  });
+}

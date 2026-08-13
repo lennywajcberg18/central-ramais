@@ -126,3 +126,12 @@ export function listForMetrics(tenantId: string, from: Date, to: Date, departmen
     },
   });
 }
+
+// Round-robin: quando cada agente recebeu sua última conversa
+export function lastAssignedAtByUsers(tenantId: string, userIds: string[]) {
+  return prisma.conversation.groupBy({
+    by: ['assignedUserId'],
+    where: { tenantId, assignedUserId: { in: userIds } },
+    _max: { assignedAt: true },
+  });
+}

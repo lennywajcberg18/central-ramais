@@ -1,6 +1,6 @@
-import { prisma } from '../prisma';
 import * as accessAttempts from '../repositories/accessAttempts';
 import * as conversations from '../repositories/conversations';
+import * as externalContacts from '../repositories/externalContacts';
 
 const SLA_TARGET_MS = 5 * 60 * 1000; // fixo no MVP: FRT < 5 min
 
@@ -48,11 +48,7 @@ export async function computeMetrics(
   }
 
   // contatos vinculados por link (independe do período de conversas)
-  const contactCounts = await prisma.externalContact.groupBy({
-    by: ['entryLinkId'],
-    where: { tenantId },
-    _count: { id: true },
-  });
+  const contactCounts = await externalContacts.countByLink(tenantId);
   const contactsByLink = new Map(contactCounts.map((r) => [r.entryLinkId, r._count.id]));
 
   const byKind = { profile: 0, nominal: 0 };
