@@ -1,0 +1,279 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  admin
+  agent
+}
+
+enum Availability {
+  available
+  away
+  offline
+}
+
+enum EntryLinkKind {
+  profile
+  nominal
+}
+
+enum ConversationStatus {
+  awaiting_department
+  open
+  assigned
+  awaiting_menu_confirm
+  awaiting_feedback
+  closed
+}
+
+enum CloseReason {
+  agent_closed
+  timeout
+  user_switched
+  access_revoked
+  no_agent_available
+}
+
+enum AccessAttemptReason {
+  no_code
+  invalid_code
+  revoked_link
+  nominal_taken
+  blocked
+}
+
+enum MessageDirection {
+  inbound
+  outbound
+}
+
+enum SenderType {
+  customer
+  agent
+  system
+}
+
+model Tenant {
+  id          String   @id @default(uuid())
+  name        String
+  timezone    String   @default("America/Sao_Paulo")
+  csatEnabled Boolean  @default(true) @map("csat_enabled")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  whatsappNumbers  WhatsappNumber[]
+  departments      Department[]
+  users            User[]
+  entryLinks       EntryLink[]
+  externalContacts ExternalContact[]
+  accessAttempts   AccessAttempt[]
+  conversations    Conversation[]
+
+  @@map("tenants")
+}
+
+model WhatsappNumber {
+  id          String   @id @default(uuid())
+  tenantId    String   @map("tenant_id")
+  provider    String   @default("twilio")
+  // E.164 puro, SEM o prefixo "whatsapp:"
+  phoneNumber String   @map("phone_number")
+  status      String   @default("active")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  tenant        Tenant         @relation(fields: [tenantId], references: [id])
+  conversations Conversation[]
+
+  // resolução de tenant pelo campo To do webhook exige unicidade global
+  @@unique([phoneNumber])
+  @@index([tenantId])
+  @@map("whatsapp_numbers")
+}
+
+model Department {
+  id        String   @id @default(uuid())
+  tenantId  String   @map("tenant_id")
+  name      String
+  menuKey   String   @map("menu_key")
+  active    Boolean  @default(true)
+  sortOrder Int      @default(0) @map("sort_order")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant        Tenant                @relation(fields: [tenantId], references: [id])
+  users         UserDepartment[]
+  entryLinks    EntryLinkDepartment[]
+  conversations Conversation[]
+
+  @@unique([tenantId, menuKey])
+  @@index([tenantId, active])
+  @@map("departments")
+}
+
+model User {
+  id           String       @id @default(uuid())
+  tenantId     String       @map("tenant_id")
+  role         Role
+  name         String
+  email        String       @unique
+  passwordHash String       @map("password_hash")
+  active       Boolean      @default(true)
+  availability Availability @default(offline)
+  lastSeenAt   DateTime?    @map("last_seen_at")
+  createdAt    DateTime     @default(now()) @map("created_at")
+
+  tenant        Tenant           @relation(fields: [tenantId], references: [id])
+  departments   UserDepartment[]
+  conversations Conversation[]
+
+  @@index([tenantId])
+  @@map("users")
+}
+
+model UserDepartment {
+  userId       String @map("user_id")
+  departmentId String @map("department_id")
+
+  user       User       @relation(fields: [userId], references: [id])
+  department Department @relation(fields: [departmentId], references: [id])
+
+  @@id([userId, departmentId])
+  @@map("user_departments")
+}
+
+model EntryLink {
+  id                String        @id @default(uuid())
+  tenantId          String        @map("tenant_id")
+  slug              String        @unique
+  entryCode         String        @map("entry_code")
+  kind              EntryLinkKind
+  label             String
+  holderNote        String?       @map("holder_note")
+  prefillText       String        @map("prefill_text")
+  active            Boolean       @default(true)
+  revokedAt         DateTime?     @map("revoked_at")
+  revokedByUserId   String?       @map("revoked_by_user_id")
+  useCount          Int           @default(0) @map("use_count")
+  createdAt         DateTime      @default(now()) @map("created_at")
+  createdByUserId   String?       @map("created_by_user_id")
+
+  tenant           Tenant                @relation(fields: [tenantId], references: [id])
+  departments      EntryLinkDepartment[]
+  externalContacts ExternalContact[]
+  conversations    Conversation[]
+
+  @@unique([tenantId, entryCode])
+  @@index([tenantId])
+  @@map("entry_links")
+}
+
+model EntryLinkDepartment {
+  entryLinkId  String @map("entry_link_id")
+  departmentId String @map("department_id")
+
+  entryLink  EntryLink  @relation(fields: [entryLinkId], references: [id])
+  department Department @relation(fields: [departmentId], references: [id])
+
+  @@id([entryLinkId, departmentId])
+  @@map("entry_link_departments")
+}
+
+model ExternalContact {
+  id          String   @id @default(uuid())
+  tenantId    String   @map("tenant_id")
+  waNumber    String   @map("wa_number")
+  entryLinkId String   @map("entry_link_id")
+  blocked     Boolean  @default(false)
+  firstSeenAt DateTime @default(now()) @map("first_seen_at")
+  lastSeenAt  DateTime @default(now()) @map("last_seen_at")
+
+  tenant        Tenant         @relation(fields: [tenantId], references: [id])
+  entryLink     EntryLink      @relation(fields: [entryLinkId], references: [id])
+  conversations Conversation[]
+
+  @@unique([tenantId, waNumber])
+  @@index([tenantId, entryLinkId])
+  @@map("external_contacts")
+}
+
+model AccessAttempt {
+  id             String              @id @default(uuid())
+  tenantId       String              @map("tenant_id")
+  waNumber       String              @map("wa_number")
+  entryCodeTried String?             @map("entry_code_tried")
+  reason         AccessAttemptReason
+  createdAt      DateTime            @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId, createdAt])
+  @@map("access_attempts")
+}
+
+model Conversation {
+  id                     String             @id @default(uuid())
+  tenantId               String             @map("tenant_id")
+  whatsappNumberId       String             @map("whatsapp_number_id")
+  externalContactId      String             @map("external_contact_id")
+  departmentId           String?            @map("department_id")
+  entryLinkId            String             @map("entry_link_id")
+  entryLinkLabelSnapshot String             @map("entry_link_label_snapshot")
+  status                 ConversationStatus
+  assignedUserId         String?            @map("assigned_user_id")
+  closeReason            CloseReason?       @map("close_reason")
+  createdAt              DateTime           @default(now()) @map("created_at")
+  assignedAt             DateTime?          @map("assigned_at")
+  firstReplyAt           DateTime?          @map("first_reply_at")
+  closedAt               DateTime?          @map("closed_at")
+  lastMessageAt          DateTime           @default(now()) @map("last_message_at")
+  menuRetries            Int                @default(0) @map("menu_retries")
+
+  tenant          Tenant          @relation(fields: [tenantId], references: [id])
+  whatsappNumber  WhatsappNumber  @relation(fields: [whatsappNumberId], references: [id])
+  externalContact ExternalContact @relation(fields: [externalContactId], references: [id])
+  department      Department?     @relation(fields: [departmentId], references: [id])
+  entryLink       EntryLink       @relation(fields: [entryLinkId], references: [id])
+  assignedUser    User?           @relation(fields: [assignedUserId], references: [id])
+  messages        Message[]
+  feedback        Feedback?
+
+  @@index([tenantId, externalContactId, status])
+  @@index([tenantId, departmentId, status])
+  @@index([tenantId, status, lastMessageAt])
+  @@index([tenantId, entryLinkId])
+  @@index([tenantId, createdAt])
+  @@map("conversations")
+}
+
+model Message {
+  id             String           @id @default(uuid())
+  conversationId String           @map("conversation_id")
+  direction      MessageDirection
+  senderType     SenderType       @map("sender_type")
+  body           String
+  waMessageId    String?          @map("wa_message_id")
+  createdAt      DateTime         @default(now()) @map("created_at")
+
+  conversation Conversation @relation(fields: [conversationId], references: [id])
+
+  // dedupe de reentrega do Twilio
+  @@unique([waMessageId])
+  @@index([conversationId, createdAt])
+  @@map("messages")
+}
+
+model Feedback {
+  id             String   @id @default(uuid())
+  conversationId String   @unique @map("conversation_id")
+  score          Int?
+  comment        String?
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  conversation Conversation @relation(fields: [conversationId], references: [id])
+
+  @@map("feedback")
+}

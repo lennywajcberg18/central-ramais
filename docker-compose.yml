@@ -1,0 +1,15 @@
+services:
+  db:
+    image: postgres:16
+    container_name: central-ramais-db
+    environment:
+      POSTGRES_USER: central
+      POSTGRES_PASSWORD: central
+      POSTGRES_DB: central_ramais
+    ports:
+      - '5432:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
