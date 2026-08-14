@@ -7,3 +7,6 @@ dist/
 
 # logs de dev
 *-dev.log
+
+# guia pessoal de demonstração, fora da entrega
+ESTUDO.md

@@ -18,7 +18,9 @@ const envSchema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((v) => v === 'true'),
-  PUBLIC_BASE_URL: z.string().default('http://localhost:3001'),
+  // O Render injeta RENDER_EXTERNAL_URL com a URL pública do serviço — usar como
+  // padrão evita repetir o domínio na configuração do deploy.
+  PUBLIC_BASE_URL: z.string().default(process.env.RENDER_EXTERNAL_URL ?? 'http://localhost:3001'),
   WEB_ORIGIN: z.string().default('http://localhost:3000'),
 });
 

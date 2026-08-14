@@ -1,8 +1,7 @@
-import { PrismaClient, EntryLinkKind, Role, Availability } from '@prisma/client';
+import { EntryLinkKind, Role, Availability } from '@prisma/client';
 import bcrypt from 'bcryptjs';
+import { prisma } from '../src/prisma';
 import { generateSlug, buildPrefillText } from '../src/utils/ids';
-
-const prisma = new PrismaClient();
 
 const PASSWORD = '123456';
 const BASE_URL = process.env.PUBLIC_BASE_URL ?? 'http://localhost:3001';
@@ -84,7 +83,7 @@ const TENANTS: SeedTenant[] = [
   },
 ];
 
-async function main() {
+export async function seed() {
   // limpa tudo em ordem de dependência para o seed ser re-executável
   await prisma.feedback.deleteMany();
   await prisma.message.deleteMany();
@@ -198,9 +197,13 @@ async function main() {
   console.log('\nSeed concluído.');
 }
 
-main()
-  .catch((e) => {
-    console.error(e);
-    process.exit(1);
-  })
-  .finally(() => prisma.$disconnect());
+// `npm run seed` executa este arquivo direto; em produção quem chama é o
+// seed-if-empty.ts, que precisa da função exportada e do controle do disconnect.
+if (require.main === module) {
+  seed()
+    .catch((e) => {
+      console.error(e);
+      process.exit(1);
+    })
+    .finally(() => prisma.$disconnect());
+}
