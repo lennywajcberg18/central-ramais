@@ -9,7 +9,9 @@ import * as users from '../repositories/users';
 const router = Router();
 
 const loginSchema = z.object({
-  email: z.string().email(),
+  // e-mail não diferencia maiúsculas: o cadastro grava em minúsculas, o login
+  // normaliza igual — senão a mesma conta some dependendo de como foi digitada
+  email: z.string().trim().toLowerCase().email(),
   password: z.string().min(1),
 });
 

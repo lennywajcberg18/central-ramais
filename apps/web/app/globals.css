@@ -1,1 +1,95 @@
 @import 'tailwindcss';
+
+/* Paleta: um único acento (verde clínico, primo desaturado do verde do WhatsApp)
+   sobre neutros frios. Nada de segundo acento — vermelho e âmbar só para estado. */
+@theme {
+  --font-sans: var(--font-jakarta), ui-sans-serif, system-ui, sans-serif;
+
+  --color-brand-50: #f1f8f6;
+  --color-brand-100: #dcefe9;
+  --color-brand-200: #b9dfd4;
+  --color-brand-300: #8bc7b7;
+  --color-brand-400: #58a894;
+  --color-brand-500: #368a76;
+  --color-brand-600: #26705f;
+  --color-brand-700: #1f5a4d;
+  --color-brand-800: #1b473e;
+  --color-brand-900: #173a33;
+
+  /* neutros com leve viés frio, para não brigar com o verde */
+  --color-ink-50: #f7f8f9;
+  --color-ink-100: #eef0f2;
+  --color-ink-200: #e0e3e7;
+  --color-ink-300: #c7ccd3;
+  --color-ink-400: #98a1ab;
+  --color-ink-500: #6b747f;
+  --color-ink-600: #4d555f;
+  --color-ink-700: #3a414a;
+  --color-ink-800: #262b32;
+  --color-ink-900: #171b20;
+
+  /* bolha de mensagem do WhatsApp — o único empréstimo literal da marca */
+  --color-wa-bubble: #d9fdd3;
+  --color-wa-canvas: #eae6df;
+
+  /* sombras tingidas com o mesmo cinza-azulado do fundo, nunca preto puro */
+  --shadow-card: 0 1px 2px rgba(23, 27, 32, 0.04), 0 1px 3px rgba(23, 27, 32, 0.06);
+  --shadow-lift: 0 4px 12px rgba(23, 27, 32, 0.08), 0 1px 3px rgba(23, 27, 32, 0.04);
+}
+
+@layer base {
+  body {
+    background-color: var(--color-ink-50);
+    color: var(--color-ink-800);
+    text-rendering: optimizeLegibility;
+  }
+
+  /* números em colunas comparáveis: métricas, telefones, horários */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+  }
+
+  h1,
+  h2,
+  h3 {
+    letter-spacing: -0.02em;
+    text-wrap: balance;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-brand-500);
+    outline-offset: 2px;
+  }
+
+  button,
+  a,
+  input,
+  select {
+    transition:
+      background-color 180ms ease,
+      border-color 180ms ease,
+      color 180ms ease,
+      box-shadow 180ms ease,
+      transform 180ms ease;
+  }
+
+  button:not(:disabled):active {
+    transform: translateY(1px);
+  }
+
+  ::selection {
+    background: var(--color-brand-200);
+    color: var(--color-brand-900);
+  }
+}
+
+/* Fundo do chat: a textura discreta do WhatsApp, feita com gradientes para não
+   depender de imagem externa. */
+.chat-canvas {
+  background-color: var(--color-wa-canvas);
+  background-image:
+    radial-gradient(circle at 20% 30%, rgba(255, 255, 255, 0.5) 0 2px, transparent 2px),
+    radial-gradient(circle at 70% 65%, rgba(0, 0, 0, 0.03) 0 3px, transparent 3px);
+  background-size: 42px 42px, 66px 66px;
+}

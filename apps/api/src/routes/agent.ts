@@ -70,6 +70,11 @@ router.post('/agent/conversations/:id/messages', async (req, res, next) => {
     if (conversation.status === 'closed' || conversation.status === 'awaiting_feedback') {
       throw new BadRequestError('conversa encerrada');
     }
+    // Número bloqueado não pode receber resposta do hospital — o bloqueio
+    // encerra a conversa, mas uma anterior ao bloqueio ainda pode estar aberta.
+    if (conversation.externalContact.blocked) {
+      throw new BadRequestError('este contato está bloqueado; desbloqueie antes de responder');
+    }
 
     // agente respondendo conversa da fila assume o atendimento
     if (conversation.status === 'open') {

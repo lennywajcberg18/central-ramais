@@ -56,10 +56,16 @@ export async function computeMetrics(
     byKind[c.entryLink.kind]++;
   }
 
-  const attempts = await accessAttempts.list(tenantId, from, to);
+  // A recusa de acesso acontece ANTES de existir escolha de setor: access_attempts
+  // não tem department_id e não há como derivar um. Com filtro de setor na tela,
+  // devolver o total do hospital misturaria escopos (o número não cai junto com
+  // os outros cards), então o bloco vem vazio e `attemptsScope` explica por quê.
   const attemptsByReason: Record<string, number> = {};
-  for (const a of attempts) {
-    attemptsByReason[a.reason] = (attemptsByReason[a.reason] ?? 0) + 1;
+  if (!departmentId) {
+    const attempts = await accessAttempts.list(tenantId, from, to);
+    for (const a of attempts) {
+      attemptsByReason[a.reason] = (attemptsByReason[a.reason] ?? 0) + 1;
+    }
   }
 
   return {
@@ -89,5 +95,6 @@ export async function computeMetrics(
     })),
     byKind,
     attemptsByReason,
+    attemptsScope: departmentId ? 'nao_se_aplica_por_setor' : 'hospital',
   };
 }
