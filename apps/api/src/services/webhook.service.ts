@@ -21,6 +21,8 @@ import {
 } from './lifecycle.service';
 import { sendLooseText } from './messaging.service';
 import { normalizeKeyword } from '../utils/text';
+import { runSerialized } from '../utils/keyedQueue';
+import { markSeen, wasSeen } from '../utils/seenMessageIds';
 import { MSG_ACCESS_REVOKED, MSG_NOT_IDENTIFIED } from './texts';
 
 export interface InboundMessage {
@@ -34,6 +36,35 @@ export async function handleInbound(msg: InboundMessage): Promise<void> {
   const waNumber = normalizeWaNumber(msg.from);
   const toNumber = normalizeWaNumber(msg.to);
 
+  // Uma fila por contato (par destino+origem). O Twilio entrega em paralelo e
+  // o fluxo abaixo lê o estado antes de escrever: sem serializar, duas
+  // mensagens do mesmo contato abrem duas conversas.
+  return runSerialized(`${toNumber}|${waNumber}`, () =>
+    processInbound(msg, toNumber, waNumber)
+  );
+}
+
+async function processInbound(
+  msg: InboundMessage,
+  toNumber: string,
+  waNumber: string
+): Promise<void> {
+  // Dedupe em memória: cobre os caminhos que não gravam em `messages` (recusa,
+  // bloqueio, revogação), onde a reentrega do Twilio infla `access_attempts`.
+  if (msg.messageSid && wasSeen(msg.messageSid)) return;
+
+  await dispatchInbound(msg, toNumber, waNumber);
+
+  // Só marca depois de processar sem erro: falha no meio deixa a reentrega do
+  // Twilio ser a segunda chance, que é para isso que ela existe.
+  if (msg.messageSid) markSeen(msg.messageSid);
+}
+
+async function dispatchInbound(
+  msg: InboundMessage,
+  toNumber: string,
+  waNumber: string
+): Promise<void> {
   // Webhook não tem sessão: o tenant é resolvido pelo To. Não resolveu → nada.
   const whatsappNumber = await whatsappNumbers.findActiveByPhoneNumber(toNumber);
   if (!whatsappNumber) {
@@ -42,7 +73,8 @@ export async function handleInbound(msg: InboundMessage): Promise<void> {
   }
   const tenantId = whatsappNumber.tenantId;
 
-  // Dedupe: o Twilio reentrega; duplicata é ignorada em silêncio.
+  // Dedupe no banco: sobrevive a restart e é a fonte de verdade para tudo que
+  // virou mensagem. Duplicata é ignorada em silêncio.
   if (msg.messageSid && (await messages.existsByWaMessageId(msg.messageSid))) {
     return;
   }

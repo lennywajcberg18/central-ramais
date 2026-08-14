@@ -23,11 +23,24 @@ export function create(
   return prisma.department.create({ data: { tenantId, ...input } });
 }
 
-export function update(
+// Só os ativos aparecem no menu do externo — é entre eles que o nome não pode repetir.
+export function listActive(tenantId: string) {
+  return prisma.department.findMany({
+    where: { tenantId, active: true },
+    select: { id: true, name: true },
+  });
+}
+
+export async function update(
   tenantId: string,
   id: string,
   data: { name?: string; menuKey?: string; sortOrder?: number; active?: boolean }
-) {
+): Promise<{ count: number }> {
+  // updateMany com data vazio devolve count 0, e a rota traduziria isso em 404
+  // para um setor que existe — mesmo contorno usado em users.update.
+  if (Object.keys(data).length === 0) {
+    return { count: await prisma.department.count({ where: { id, tenantId } }) };
+  }
   return prisma.department.updateMany({ where: { id, tenantId }, data });
 }
 

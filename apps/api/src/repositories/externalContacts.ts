@@ -6,13 +6,20 @@ export function findByWaNumber(tenantId: string, waNumber: string) {
   });
 }
 
-// Link nominal aceita um número só — esta consulta é o teste de "já usado".
-export async function existsForLink(tenantId: string, entryLinkId: string): Promise<boolean> {
-  const found = await prisma.externalContact.findFirst({
+export function findById(tenantId: string, id: string) {
+  return prisma.externalContact.findFirst({ where: { id, tenantId } });
+}
+
+// Link nominal aceita um número só — este é o contato que já ocupa o link.
+export function findHolderOfLink(tenantId: string, entryLinkId: string) {
+  return prisma.externalContact.findFirst({
     where: { tenantId, entryLinkId },
-    select: { id: true },
+    select: { id: true, waNumber: true },
   });
-  return found !== null;
+}
+
+export async function existsForLink(tenantId: string, entryLinkId: string): Promise<boolean> {
+  return (await findHolderOfLink(tenantId, entryLinkId)) !== null;
 }
 
 export function create(tenantId: string, input: { waNumber: string; entryLinkId: string }) {

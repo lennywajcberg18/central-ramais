@@ -38,6 +38,29 @@ export async function listDepartmentsForLink(tenantId: string, entryLinkId: stri
     .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
 }
 
+// Links ativos que ficariam SEM NENHUM setor ativo se `departmentId` for
+// desativado. Um link assim continua "ativo" na tela do admin, mas quem usa
+// recebe "Nenhum setor disponível" — a desativação precisa ser recusada antes.
+export function listActiveOrphanedByDepartment(tenantId: string, departmentId: string) {
+  return prisma.entryLink.findMany({
+    where: {
+      tenantId,
+      active: true,
+      departments: { some: { departmentId } },
+      NOT: {
+        departments: {
+          some: {
+            departmentId: { not: departmentId },
+            department: { tenantId, active: true },
+          },
+        },
+      },
+    },
+    select: { id: true, label: true },
+    orderBy: { createdAt: 'desc' },
+  });
+}
+
 export function list(tenantId: string) {
   return prisma.entryLink.findMany({
     where: { tenantId },
