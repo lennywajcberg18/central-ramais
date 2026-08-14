@@ -16,6 +16,19 @@ npm run dev                     # 5. api:3001  web:3000
 O seed imprime as credenciais dos usuários e os códigos dos entry links.
 O provider padrão em dev é o `MockProvider` — nada sai de verdade.
 
+## Deploy de demonstração
+
+`render.yaml` é um blueprint do [Render](https://render.com): sobe Postgres,
+API e web em três serviços do plano free, a partir deste repositório. No painel
+do Render, *New → Blueprint* apontando para o repo faz o resto.
+
+Migrations rodam no start (`prisma migrate deploy`) e o seed só é executado se
+o banco estiver vazio (`scripts/seed-if-empty.ts`) — restart não apaga dados.
+
+Limites do plano free: os serviços hibernam após 15 minutos sem acesso (a
+primeira visita depois disso leva ~50s) e o Postgres gratuito expira em 30
+dias. É ambiente de demonstração, não de produção.
+
 ## Estrutura
 
 ```
