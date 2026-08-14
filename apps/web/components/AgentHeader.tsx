@@ -3,12 +3,8 @@
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { api, clearSession, getSessionUser, SessionUser } from '@/lib/api';
-
-const AVAILABILITY_LABEL: Record<SessionUser['availability'], string> = {
-  available: 'Disponível',
-  away: 'Ausente',
-  offline: 'Offline',
-};
+import { AVAILABILITY } from '@/lib/labels';
+import { Button, Dot } from '@/components/ui';
 
 export default function AgentHeader() {
   const router = useRouter();
@@ -42,34 +38,44 @@ export default function AgentHeader() {
 
   if (!user) return null;
 
+  const estado = AVAILABILITY[user.availability] ?? {
+    label: 'Situação desconhecida',
+    tone: 'muted' as const,
+  };
+
   return (
-    <header className="flex items-center justify-between border-b border-slate-200 bg-white px-4 py-3">
-      <div>
-        <h1 className="font-semibold">Conversas</h1>
-        <p className="text-xs text-slate-500">{user.name}</p>
+    <header className="flex items-center justify-between gap-3 border-b border-ink-200 bg-white px-4 py-3 sm:px-6">
+      <div className="min-w-0">
+        <h1 className="text-lg font-semibold text-ink-900">Conversas</h1>
+        <p className="truncate text-xs text-ink-500">{user.name}</p>
       </div>
-      <div className="flex items-center gap-2">
-        <button
+      <div className="flex shrink-0 items-center gap-2">
+        <Button
+          type="button"
+          variant="secondary"
           onClick={toggleAvailability}
-          className={`rounded-full px-3 py-1 text-sm font-medium ${
+          title={
             user.availability === 'available'
-              ? 'bg-green-100 text-green-700'
-              : 'bg-amber-100 text-amber-700'
-          }`}
+              ? 'Marcar como ausente — novas conversas param de chegar para você'
+              : 'Marcar como disponível — voltar a receber conversas'
+          }
         >
-          {AVAILABILITY_LABEL[user.availability]}
-        </button>
+          <Dot tone={estado.tone} />
+          {estado.label}
+        </Button>
         {user.role === 'admin' && (
-          <button
+          <Button
+            type="button"
+            variant="secondary"
             onClick={() => router.push('/admin/dashboard')}
-            className="rounded-lg border border-slate-300 px-3 py-1 text-sm"
+            title="Ir para o painel do hospital"
           >
-            Admin
-          </button>
+            Painel
+          </Button>
         )}
-        <button onClick={logout} className="rounded-lg border border-slate-300 px-3 py-1 text-sm">
+        <Button type="button" variant="ghost" onClick={logout}>
           Sair
-        </button>
+        </Button>
       </div>
     </header>
   );
