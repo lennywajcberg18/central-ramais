@@ -72,6 +72,22 @@ export function releaseFromUser(
   });
 }
 
+// Troca de setor com guarda: entre ler a conversa e escrever, ela pode ter sido
+// encerrada por inatividade ou pelo próprio externo. O status entra no WHERE e o
+// chamador confere o count — sem isso a transferência ressuscitaria a conversa.
+export function transferDepartment(tenantId: string, id: string, departmentId: string) {
+  return prisma.conversation.updateMany({
+    where: { tenantId, id, status: { in: ['open', 'assigned'] } },
+    data: {
+      departmentId,
+      status: 'open',
+      assignedUserId: null,
+      assignedAt: null,
+      menuRetries: 0,
+    },
+  });
+}
+
 export function listOpenAssignedTo(tenantId: string, userId: string) {
   return prisma.conversation.findMany({
     where: { tenantId, assignedUserId: userId, status: { in: ACTIVE_STATUSES } },

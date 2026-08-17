@@ -17,6 +17,10 @@ export function buildQueueText(departmentName: string): string {
   return `Você será atendido por *${departmentName}*. Aguarde um momento.`;
 }
 
+export function buildTransferText(departmentName: string): string {
+  return `Seu atendimento foi encaminhado para *${departmentName}*. Aguarde um momento.`;
+}
+
 export function buildMenuConfirmText(departmentName: string): string {
   return (
     `Você está falando com *${departmentName}*. Deseja encerrar e voltar ao menu?\n` +
