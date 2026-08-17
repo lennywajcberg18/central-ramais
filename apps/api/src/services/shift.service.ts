@@ -53,7 +53,10 @@ export async function reevaluateShift(tenantId: string, userId: string): Promise
     await endShift(tenantId, userId, 'admin');
     return;
   }
-  const novoFim = capShiftEnd(fim, new Date());
+  // O teto conta do início do plantão, não do momento em que a escala foi
+  // salva: ancorar em "agora" faria cada edição renovar as 16 horas, e o limite
+  // de duração deixaria de existir para quem tem escala contínua.
+  const novoFim = capShiftEnd(fim, aberta.startedAt);
   if (novoFim.getTime() !== aberta.endsAt.getTime()) {
     await shifts.updateSessionEnd(tenantId, aberta.id, novoFim);
   }
