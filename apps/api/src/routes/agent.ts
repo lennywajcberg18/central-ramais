@@ -10,6 +10,7 @@ import { closeFromAgent } from '../services/lifecycle.service';
 import { sendConversationMessage } from '../services/messaging.service';
 import { assignPendingForUser } from '../services/routing.service';
 import { endShift } from '../services/shift.service';
+import { listTransferTargets, transferConversation } from '../services/transfer.service';
 
 const router = Router();
 
@@ -114,6 +115,36 @@ router.post('/agent/conversations/:id/close', async (req, res, next) => {
 
     await closeFromAgent(tenantId, conversation.id);
     res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Para onde esta conversa pode ir: os setores do link da pessoa, não os do hospital.
+router.get('/agent/conversations/:id/transfer-targets', async (req, res, next) => {
+  try {
+    const { tenantId } = req.auth!;
+    res.json(await listTransferTargets(tenantId, req.params.id));
+  } catch (err) {
+    next(err);
+  }
+});
+
+const transferSchema = z.object({ departmentId: z.string().min(1) });
+
+router.post('/agent/conversations/:id/transfer', async (req, res, next) => {
+  try {
+    const { tenantId, userId } = req.auth!;
+    const parsed = transferSchema.safeParse(req.body);
+    if (!parsed.success) throw new BadRequestError('escolha o setor de destino');
+
+    const resultado = await transferConversation(
+      tenantId,
+      req.params.id,
+      parsed.data.departmentId,
+      userId
+    );
+    res.json({ ok: true, ...resultado });
   } catch (err) {
     next(err);
   }

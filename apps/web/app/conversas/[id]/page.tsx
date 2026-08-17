@@ -7,6 +7,12 @@ import { Badge, Button, Dot, EmptyState, ExplainCard, Skeleton } from '@/compone
 import { ApiError, api } from '@/lib/api';
 import { CONVERSATION_STATUS, formatPhone } from '@/lib/labels';
 
+interface TransferTarget {
+  id: string;
+  name: string;
+  current: boolean;
+}
+
 interface MessageRow {
   id: string;
   direction: 'inbound' | 'outbound';
@@ -65,6 +71,10 @@ export default function ConversaPage() {
   const [sendError, setSendError] = useState<string | null>(null);
   const [sentFlash, setSentFlash] = useState(false);
   const [confirmingClose, setConfirmingClose] = useState(false);
+  const [transferindo, setTransferindo] = useState(false);
+  const [alvos, setAlvos] = useState<TransferTarget[] | null>(null);
+  const [enviandoTransferencia, setEnviandoTransferencia] = useState<string | null>(null);
+  const [transferError, setTransferError] = useState<string | null>(null);
   const [closing, setClosing] = useState(false);
   const [closeError, setCloseError] = useState<string | null>(null);
 
@@ -112,6 +122,20 @@ export default function ConversaPage() {
     };
   }, []);
 
+  // Escape fecha, como em todos os outros diálogos do projeto. No meio do envio
+  // não fecha: a transferência já pode ter sido aceita do outro lado.
+  useEffect(() => {
+    if (!transferindo) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape' && enviandoTransferencia === null) {
+        setTransferindo(false);
+        setTransferError(null);
+      }
+    }
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [transferindo, enviandoTransferencia]);
+
   async function send(e: FormEvent) {
     e.preventDefault();
     const text = draft.trim();
@@ -137,6 +161,34 @@ export default function ConversaPage() {
       setSendError(readError(err, 'não foi possível enviar agora'));
     } finally {
       setSending(false);
+    }
+  }
+
+  async function abrirTransferencia() {
+    setTransferError(null);
+    setTransferindo(true);
+    setAlvos(null);
+    try {
+      setAlvos(await api<TransferTarget[]>(`/agent/conversations/${id}/transfer-targets`));
+    } catch (err) {
+      setTransferError(readError(err, 'não foi possível carregar os setores agora'));
+    }
+  }
+
+  async function transferir(departmentId: string) {
+    setEnviandoTransferencia(departmentId);
+    setTransferError(null);
+    try {
+      await api(`/agent/conversations/${id}/transfer`, {
+        method: 'POST',
+        body: JSON.stringify({ departmentId }),
+      });
+      // a conversa saiu da mão de quem transferiu e voltou para a fila do outro
+      // setor: continuar na tela dela daria a impressão de que ainda é dele
+      router.push('/conversas');
+    } catch (err) {
+      setTransferError(readError(err, 'não foi possível transferir agora'));
+      setEnviandoTransferencia(null);
     }
   }
 
@@ -200,6 +252,9 @@ export default function ConversaPage() {
             <Button variant="secondary" onClick={() => router.push('/conversas')}>
               <ArrowLeftIcon />
               Voltar
+            </Button>
+            <Button variant="secondary" onClick={abrirTransferencia}>
+              Encaminhar
             </Button>
             <Button
               variant="danger"
@@ -337,6 +392,85 @@ export default function ConversaPage() {
           {sending ? 'Enviando…' : sentFlash ? 'Mensagem enviada' : ''}
         </p>
       </form>
+
+      {transferindo && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-ink-900/40 p-4 sm:items-center">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="titulo-encaminhar"
+            className="w-full max-w-md rounded-2xl border border-ink-200/70 bg-white p-6 shadow-[var(--shadow-lift)]"
+          >
+            <h2 id="titulo-encaminhar" className="text-lg font-semibold text-ink-900">
+              Encaminhar para outro setor
+            </h2>
+            <p className="mt-2 text-sm leading-relaxed text-ink-600">
+              A conversa vai para a fila do setor escolhido, com todo o histórico. A pessoa recebe um
+              aviso de que mudou de setor.
+            </p>
+
+            {alvos === null && !transferError ? (
+              <div className="mt-5 space-y-2">
+                <Skeleton className="h-11" />
+                <Skeleton className="h-11" />
+              </div>
+            ) : (
+              <div className="mt-5 space-y-2">
+                {(alvos ?? [])
+                  .filter((a) => !a.current)
+                  .map((a) => (
+                    <button
+                      key={a.id}
+                      type="button"
+                      disabled={enviandoTransferencia !== null}
+                      onClick={() => transferir(a.id)}
+                      className="flex w-full items-center justify-between rounded-xl border border-ink-200 px-4 py-3 text-left text-sm font-medium text-ink-800 hover:border-brand-400 hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {a.name}
+                      <span className="text-xs font-normal text-ink-500">
+                        {enviandoTransferencia === a.id ? 'Encaminhando…' : 'Encaminhar'}
+                      </span>
+                    </button>
+                  ))}
+
+                {alvos !== null && alvos.filter((a) => !a.current).length === 0 && (
+                  <p className="rounded-xl bg-ink-50 px-4 py-3 text-sm leading-relaxed text-ink-600">
+                    O link desta pessoa dá acesso a um setor só, então não há para onde encaminhar.
+                  </p>
+                )}
+              </div>
+            )}
+
+            <p className="mt-3 text-xs leading-relaxed text-ink-500">
+              Só aparecem os setores que o link de acesso desta pessoa permite — encaminhar para fora
+              disso deixaria o menu dela mostrando outra coisa.
+            </p>
+
+            {transferError && (
+              <p
+                role="alert"
+                className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm leading-relaxed text-rose-800"
+              >
+                {transferError}.
+              </p>
+            )}
+
+            <div className="mt-6 flex justify-end">
+              <Button
+                variant="secondary"
+                autoFocus
+                disabled={enviandoTransferencia !== null}
+                onClick={() => {
+                  setTransferindo(false);
+                  setTransferError(null);
+                }}
+              >
+                Cancelar
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {confirmingClose && (
         <ConfirmDialog

@@ -253,10 +253,21 @@ recebendo chamado do hospital depois que o plantão acaba.**
   ```
 
 ### T4.2 — Transferir atendimento entre ramais · `feat/transferencia`
-- [ ] A Recepção passa a conversa do externo para a Cardiologia com o histórico
+- [x] A Recepção passa a conversa do externo para a Cardiologia com o histórico
       junto; a transferência vira mensagem `sender_type=system` e o externo é
       avisado do setor novo
-- [ ] A conversa continua sendo **uma só** — separar quebraria as métricas
+- [x] A conversa continua sendo **uma só** — separar quebraria as métricas
+- [x] Os destinos oferecidos são **os setores do link da pessoa**, nunca os do
+      hospital: encaminhar para fora disso deixaria o MENU dela mostrando outra
+      coisa. Setor fora do link responde 404, como acontece entre tenants
+- [x] Sai da mão de quem transferiu e volta para a fila do setor novo, onde é
+      oferecida a quem está de plantão lá
+- **Testar:** abrir uma conversa em `/conversas/<id>` e usar **Encaminhar**. Pela
+      API:
+  ```bash
+  curl localhost:3001/agent/conversations/<ID>/transfer-targets -H "Authorization: Bearer <TOKEN>"
+  curl -X POST localhost:3001/agent/conversations/<ID>/transfer     -H "Authorization: Bearer <TOKEN>" -H 'Content-Type: application/json'     -d '{"departmentId":"<ID_DO_SETOR>"}'
+  ```
 
 ### T4.3 — Contato entre ramais · `feat/ramal-interno`
 - [ ] Conversa interna entre dois setores, sem externo envolvido

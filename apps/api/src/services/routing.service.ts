@@ -3,13 +3,26 @@ import * as users from '../repositories/users';
 
 // Round-robin: agente disponível do setor que foi atribuído há mais tempo.
 // Sem agente disponível → a conversa fica em `open`, sem erro.
-export async function tryAssign(tenantId: string, conversationId: string): Promise<boolean> {
+export interface AssignOptions {
+  // Quem acabou de encaminhar não pode receber a conversa de volta: para quem
+  // está de fora, o atendimento voltaria para a mesma pessoa que o passou adiante.
+  exceptUserId?: string;
+}
+
+export async function tryAssign(
+  tenantId: string,
+  conversationId: string,
+  options: AssignOptions = {}
+): Promise<boolean> {
   const conversation = await conversations.findById(tenantId, conversationId);
   if (!conversation || conversation.status !== 'open' || !conversation.departmentId) {
     return false;
   }
 
-  const agents = await users.availableAgentsForDepartment(tenantId, conversation.departmentId);
+  const todos = await users.availableAgentsForDepartment(tenantId, conversation.departmentId);
+  const agents = options.exceptUserId
+    ? todos.filter((a) => a.id !== options.exceptUserId)
+    : todos;
   if (agents.length === 0) return false;
 
   const lastAssignments = await conversations.lastAssignedAtByUsers(
