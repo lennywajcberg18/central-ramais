@@ -6,7 +6,9 @@ falar com quais setores. Ver `PROJETO.md` para a especificação completa.
 ## Como rodar em 5 comandos
 
 ```bash
-cp .env.example apps/api/.env   # 1. configura o ambiente
+# 1. configura o ambiente e gera o segredo do JWT (o .env.example vem sem ele
+#    de propósito: este repositório é público)
+cp .env.example apps/api/.env && echo "JWT_SECRET=$(openssl rand -base64 32)" >> apps/api/.env
 docker compose up -d            # 2. sobe o Postgres
 npm install                     # 3. instala dependências
 npm run migrate -w api && npm run seed -w api   # 4. migra e popula o banco
@@ -22,8 +24,11 @@ O provider padrão em dev é o `MockProvider` — nada sai de verdade.
 API e web em três serviços do plano free, a partir deste repositório. No painel
 do Render, *New → Blueprint* apontando para o repo faz o resto.
 
-Migrations rodam no start (`prisma migrate deploy`) e o seed só é executado se
-o banco estiver vazio (`scripts/seed-if-empty.ts`) — restart não apaga dados.
+Migrations rodam no start (`prisma migrate deploy`) e o seed só é executado com
+`ALLOW_DEMO_SEED=true` **e** o banco vazio (`scripts/seed-if-empty.ts`) — restart
+não apaga dados. Quem clonar este blueprint para uso real deve deixar a variável
+de fora: ela é o que impede o banco novo de nascer com os usuários de
+demonstração e suas senhas fracas.
 
 Limites do plano free: os serviços hibernam após 15 minutos sem acesso (a
 primeira visita depois disso leva ~50s) e o Postgres gratuito expira em 30

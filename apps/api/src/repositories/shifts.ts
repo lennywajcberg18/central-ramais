@@ -1,4 +1,4 @@
-import { ShiftEndReason } from '@prisma/client';
+import { Prisma, ShiftEndReason } from '@prisma/client';
 import { prisma } from '../prisma';
 
 export interface ShiftInput {
@@ -79,16 +79,22 @@ export function closeExpiredSession(
   tenantId: string,
   id: string,
   at: Date,
-  reason: ShiftEndReason
+  reason: ShiftEndReason,
+  client: Prisma.TransactionClient = prisma
 ) {
-  return prisma.shiftSession.updateMany({
+  return client.shiftSession.updateMany({
     where: { id, tenantId, endedAt: null, endsAt: { lte: at } },
     data: { endedAt: new Date(), endReason: reason },
   });
 }
 
-export function closeSessionsOfUser(tenantId: string, userId: string, reason: ShiftEndReason) {
-  return prisma.shiftSession.updateMany({
+export function closeSessionsOfUser(
+  tenantId: string,
+  userId: string,
+  reason: ShiftEndReason,
+  client: Prisma.TransactionClient = prisma
+) {
+  return client.shiftSession.updateMany({
     where: { tenantId, userId, endedAt: null },
     data: { endedAt: new Date(), endReason: reason },
   });

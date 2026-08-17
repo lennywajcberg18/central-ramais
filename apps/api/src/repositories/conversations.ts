@@ -33,10 +33,25 @@ export interface CreateConversationInput {
   departmentId?: string;
 }
 
-export function create(tenantId: string, input: CreateConversationInput) {
-  return prisma.conversation.create({
-    data: { tenantId, ...input },
-  });
+// "Uma conversa aberta por contato" agora é do banco, não da memória: o índice
+// único parcial `conversations_uma_ativa_por_contato` cobre os ACTIVE_STATUSES.
+// O keyedQueue serializa dentro de um processo só — com dois, as duas mensagens
+// seguidas do mesmo número leem "não há conversa ativa" e as duas criam.
+// Perder essa corrida não é erro: quem chegou depois recebe a conversa que o
+// primeiro criou e o fluxo continua nela, sem segundo menu nem linha órfã.
+export async function create(tenantId: string, input: CreateConversationInput) {
+  try {
+    return await prisma.conversation.create({
+      data: { tenantId, ...input },
+    });
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+      const jaAberta = await findActiveByContact(tenantId, input.externalContactId);
+      // Sem conversa ativa o P2002 veio de outra constraint — não é esta corrida.
+      if (jaAberta) return jaAberta;
+    }
+    throw err;
+  }
 }
 
 export function findById(tenantId: string, id: string) {
@@ -119,27 +134,43 @@ export async function assignToIfOnShift(
   userId: string,
   at: Date
 ): Promise<{ count: number }> {
-  const count = await prisma.$executeRaw`
-    UPDATE conversations
-       SET status = 'assigned', assigned_user_id = ${userId}, assigned_at = ${at}
-     WHERE id = ${id}
-       AND tenant_id = ${tenantId}
-       AND status = 'open'
-       AND assigned_user_id IS NULL
-       AND EXISTS (
-             SELECT 1
-               FROM users u
-               JOIN shift_sessions s
-                 ON s.user_id = u.id
-                AND s.tenant_id = u.tenant_id
-                AND s.ended_at IS NULL
-                AND s.ends_at > ${at}
-              WHERE u.id = ${userId}
-                AND u.tenant_id = ${tenantId}
-                AND u.active
-                AND u.availability = 'available'
-           )`;
-  return { count };
+  // A transação existe para disputar a LINHA DO ATENDENTE com quem está saindo de
+  // plantão. Sem ela, o `EXISTS` abaixo lia a sessão ainda aberta enquanto o
+  // `endShift` do próprio atendente já rodava — os dois passavam, e a conversa
+  // ficava com alguém sem plantão: fora da fila do setor (que só mostra `open`) e
+  // fora da tela dele (que perdeu o acesso). Trinta minutos até o job de
+  // inatividade encerrar, com a pessoa do lado de fora falando sozinha.
+  //
+  // O `FOR UPDATE` casa com o `UPDATE users` que o `endShift` faz na mesma
+  // transação dele. Quem chega primeiro ganha: se for a atribuição, o release do
+  // `endShift` varre a conversa de volta para a fila logo em seguida; se for a
+  // saída, este SELECT espera, relê a linha já `offline` e o `EXISTS` reprova.
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`
+      SELECT 1 FROM users WHERE id = ${userId} AND tenant_id = ${tenantId} FOR UPDATE`;
+
+    const count = await tx.$executeRaw`
+      UPDATE conversations
+         SET status = 'assigned', assigned_user_id = ${userId}, assigned_at = ${at}
+       WHERE id = ${id}
+         AND tenant_id = ${tenantId}
+         AND status = 'open'
+         AND assigned_user_id IS NULL
+         AND EXISTS (
+               SELECT 1
+                 FROM users u
+                 JOIN shift_sessions s
+                   ON s.user_id = u.id
+                  AND s.tenant_id = u.tenant_id
+                  AND s.ended_at IS NULL
+                  AND s.ends_at > ${at}
+                WHERE u.id = ${userId}
+                  AND u.tenant_id = ${tenantId}
+                  AND u.active
+                  AND u.availability = 'available'
+             )`;
+    return { count };
+  });
 }
 
 // Encerrar é uma corrida com tudo o mais: entre ler a conversa e gravar o
@@ -208,8 +239,12 @@ export function touchIfActive(tenantId: string, id: string) {
   });
 }
 
-export function listOpenAssignedTo(tenantId: string, userId: string) {
-  return prisma.conversation.findMany({
+export function listOpenAssignedTo(
+  tenantId: string,
+  userId: string,
+  client: Prisma.TransactionClient = prisma
+) {
+  return client.conversation.findMany({
     where: { tenantId, assignedUserId: userId, status: { in: ACTIVE_STATUSES } },
     select: { id: true },
   });
@@ -243,6 +278,32 @@ export function listForAgentView(tenantId: string, userId: string, departmentIds
 export function findByIdWithRelations(tenantId: string, id: string) {
   return prisma.conversation.findFirst({
     where: { id, tenantId },
+    include: {
+      department: { select: { id: true, name: true } },
+      externalContact: true,
+      whatsappNumber: true,
+    },
+  });
+}
+
+// A porta do atendente para UMA conversa: a mesma regra da lista dele
+// (`listForAgentView`) — a minha ou a do meu setor. Só o tenant não basta: com um
+// id vazado (print, URL colada no grupo da equipe) qualquer atendente abria o
+// histórico de um paciente de setor alheio, respondia pelo WhatsApp do hospital
+// em nome daquele setor e ainda tirava a conversa da fila de quem devia atender.
+// 404 e nunca 403, pela mesma razão que vale entre hospitais: quem não pode ver
+// não recebe confirmação de que a conversa existe. O gestor continua enxergando
+// tudo por /admin/conversations, que é a porta certa para isso.
+export function findByIdForAgent(tenantId: string, userId: string, id: string) {
+  return prisma.conversation.findFirst({
+    where: {
+      id,
+      tenantId,
+      OR: [
+        { assignedUserId: userId },
+        { department: { users: { some: { userId } } } },
+      ],
+    },
     include: {
       department: { select: { id: true, name: true } },
       externalContact: true,

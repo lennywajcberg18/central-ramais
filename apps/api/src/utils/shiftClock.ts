@@ -1,4 +1,5 @@
-// Horário de plantão em minutos desde 00:00, no fuso do hospital.
+// Contas de relógio no fuso do hospital: escala de plantão em minutos desde 00:00
+// e a janela de datas dos relatórios.
 // Tudo aqui é função pura: a escala é o dado, o relógio é parâmetro.
 
 export const MINUTES_IN_DAY = 1440;
@@ -61,29 +62,6 @@ export function localNow(timezone: string, at: Date = new Date()): LocalNow {
   const minute = parseInt(find('minute'), 10) || 0;
 
   return { weekday, minuteOfDay: hour * 60 + minute };
-}
-
-// Minutos restantes se `now` cai dentro desta faixa; null se está fora dela.
-export function minutesLeftInWindow(window: ShiftWindow, now: LocalNow): number | null {
-  const { weekday, startMinute, endMinute } = window;
-  if (startMinute === endMinute) return null;
-
-  if (startMinute < endMinute) {
-    if (weekday !== now.weekday) return null;
-    const dentro = now.minuteOfDay >= startMinute && now.minuteOfDay < endMinute;
-    return dentro ? endMinute - now.minuteOfDay : null;
-  }
-
-  // Plantão que vira o dia (19h→7h): a faixa é [start, 24h) no dia cadastrado
-  // mais [0, end) no dia seguinte.
-  if (weekday === now.weekday && now.minuteOfDay >= startMinute) {
-    return MINUTES_IN_DAY - now.minuteOfDay + endMinute;
-  }
-  const diaAnterior = (now.weekday + 6) % 7;
-  if (weekday === diaAnterior && now.minuteOfDay < endMinute) {
-    return endMinute - now.minuteOfDay;
-  }
-  return null;
 }
 
 const MINUTES_IN_WEEK = 7 * MINUTES_IN_DAY;
@@ -150,6 +128,74 @@ export function formatMinuteOfDay(minute: number): string {
   const hh = String(Math.floor(normalizado / 60)).padStart(2, '0');
   const mm = String(normalizado % 60).padStart(2, '0');
   return `${hh}:${mm}`;
+}
+
+// ---------- janela de datas no fuso do hospital ----------
+
+function offsetPartsIn(timezone: string, at: Date) {
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(at);
+}
+
+// Quantos minutos o fuso está à frente do UTC no instante `at`: a diferença entre
+// o relógio de parede de lá e o relógio UTC. É o que permite sair de "22:00 em São
+// Paulo" para o instante que o banco guarda.
+function offsetMinutes(timezone: string, at: Date): number {
+  let parts;
+  try {
+    parts = offsetPartsIn(timezone, at);
+  } catch {
+    // Mesmo motivo de localNow: fuso inválido no cadastro do tenant não pode
+    // derrubar o relatório — cai em UTC.
+    console.warn(`[shiftClock] fuso inválido "${timezone}", usando UTC`);
+    return 0;
+  }
+  const find = (type: string) =>
+    parseInt(parts.find((p) => p.type === type)?.value ?? '0', 10) || 0;
+  const relogioLocal = Date.UTC(
+    find('year'),
+    find('month') - 1,
+    find('day'),
+    find('hour'),
+    find('minute'),
+    find('second')
+  );
+  return Math.round((relogioLocal - Math.floor(at.getTime() / 1000) * 1000) / 60_000);
+}
+
+// Instante UTC da meia-noite local de uma data. Duas passadas porque o próprio
+// deslocamento depende do instante: no dia da virada do horário de verão a
+// primeira estimativa cai do lado errado da mudança.
+function startOfLocalDay(timezone: string, isoDate: string, maisDias = 0): Date {
+  const [ano, mes, dia] = isoDate.split('-').map(Number);
+  const alvo = Date.UTC(ano, mes - 1, dia + maisDias);
+  const primeira = alvo - offsetMinutes(timezone, new Date(alvo)) * 60_000;
+  return new Date(alvo - offsetMinutes(timezone, new Date(primeira)) * 60_000);
+}
+
+// A janela do relatório é dita em datas ("de 1 a 7 de agosto") e o hospital lê
+// essas datas no relógio DELE. Sem esta conversão a janela era resolvida no fuso
+// do processo: com o Node em UTC, "hoje" para um tenant em São Paulo começava às
+// 21h de ontem e o plantão da noite inteiro caía no relatório do dia seguinte.
+export function dayRangeInZone(
+  timezone: string,
+  from?: string,
+  to?: string
+): { from?: Date; to?: Date } {
+  return {
+    from: from ? startOfLocalDay(timezone, from) : undefined,
+    // Fim do dia é a véspera da meia-noite seguinte: as consultas filtram com
+    // `lte`, e parar em 23:59:59 deixaria o último segundo de fora.
+    to: to ? new Date(startOfLocalDay(timezone, to, 1).getTime() - 1) : undefined,
+  };
 }
 
 // Para a mensagem de recusa do login: "quinta-feira, 07:00".

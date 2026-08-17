@@ -1,6 +1,6 @@
 import { Availability, Prisma, Role } from '@prisma/client';
 import { prisma } from '../prisma';
-import { releaseFromUser } from './conversations';
+import { ACTIVE_STATUSES, releaseFromUser } from './conversations';
 
 // Login não tem tenant ainda — email é único global e o tenant sai do usuário.
 export function findActiveByEmail(email: string) {
@@ -42,8 +42,13 @@ export function list(tenantId: string) {
   });
 }
 
-export function setAvailability(tenantId: string, id: string, availability: Availability) {
-  return prisma.user.updateMany({
+export function setAvailability(
+  tenantId: string,
+  id: string,
+  availability: Availability,
+  client: Prisma.TransactionClient = prisma
+) {
+  return client.user.updateMany({
     where: { id, tenantId },
     data: { availability, lastSeenAt: new Date() },
   });
@@ -89,6 +94,26 @@ export interface UpdateUserInput {
 export interface WriteUserResult {
   count: number;
   releasedConversations: number;
+  // Quais conversas voltaram para a fila. Quem chamou reoferece cada uma com
+  // `tryAssign` DEPOIS que a transação fecha: repositório não chama service, e a
+  // atribuição faz efeito externo (abre conexão própria, avisa o externo) — o que
+  // não pode acontecer dentro da transação. Sem a reoferta, o atendimento fica
+  // parado em `open` mesmo com um colega de plantão no mesmo setor.
+  releasedConversationIds: string[];
+}
+
+// Conversas ainda vivas na mão da pessoa. Lida dentro da transação, logo antes de
+// soltá-las, porque depois do UPDATE não há mais como saber quais eram.
+function idsEmAndamento(
+  tx: Prisma.TransactionClient,
+  tenantId: string,
+  userId: string,
+  where: Prisma.ConversationWhereInput = {}
+): Promise<{ id: string }[]> {
+  return tx.conversation.findMany({
+    where: { tenantId, assignedUserId: userId, status: { in: ACTIVE_STATUSES }, ...where },
+    select: { id: true },
+  });
 }
 
 export async function create(tenantId: string, input: CreateUserInput) {
@@ -120,13 +145,34 @@ export async function update(
       Object.keys(data).length > 0
         ? (await tx.user.updateMany({ where: { id, tenantId }, data })).count
         : await tx.user.count({ where: { id, tenantId } });
-    if (count === 0) return { count: 0, releasedConversations: 0 };
+    if (count === 0) return { count: 0, releasedConversations: 0, releasedConversationIds: [] };
+
+    const liberadas: string[] = [];
+    let released = 0;
 
     if (departmentIds) {
       await tx.userDepartment.deleteMany({ where: { userId: id, user: { tenantId } } });
       await tx.userDepartment.createMany({
         data: departmentIds.map((departmentId) => ({ userId: id, departmentId })),
       });
+
+      // Sair de um setor devolve para a fila o que ficou fora do novo escopo.
+      // Sem isto a conversa continua com `assignedUserId` de quem saiu: some da
+      // fila de quem ficou no setor, segue em "minhas conversas" de quem não
+      // atende mais aquele ramal, e a resposta ainda diz que nada ficou pendurado.
+      const foraDoNovoEscopo = { departmentId: { notIn: departmentIds } };
+      const foraDoEscopo = await idsEmAndamento(tx, tenantId, id, foraDoNovoEscopo);
+      const orfas = await tx.conversation.updateMany({
+        where: {
+          tenantId,
+          assignedUserId: id,
+          status: { in: ACTIVE_STATUSES },
+          ...foraDoNovoEscopo,
+        },
+        data: { status: 'open', assignedUserId: null, assignedAt: null },
+      });
+      liberadas.push(...foraDoEscopo.map((c) => c.id));
+      released += orfas.count;
     }
 
     if (data.active === false) {
@@ -137,9 +183,13 @@ export async function update(
         where: { tenantId, userId: id, endedAt: null },
         data: { endedAt: new Date(), endReason: 'admin' },
       });
+
+      const emAndamento = await idsEmAndamento(tx, tenantId, id);
+      released += (await releaseFromUser(tenantId, id, tx)).count;
+      liberadas.push(...emAndamento.map((c) => c.id));
     }
-    const released = data.active === false ? (await releaseFromUser(tenantId, id, tx)).count : 0;
-    return { count, releasedConversations: released };
+
+    return { count, releasedConversations: released, releasedConversationIds: liberadas };
   });
 }
 
@@ -149,7 +199,9 @@ export function deactivate(tenantId: string, id: string): Promise<WriteUserResul
       where: { id, tenantId },
       data: { active: false, availability: 'offline' },
     });
-    if (updated.count === 0) return { count: 0, releasedConversations: 0 };
+    if (updated.count === 0) {
+      return { count: 0, releasedConversations: 0, releasedConversationIds: [] };
+    }
 
     // Desativar encerra o plantão junto: sessão aberta de quem não existe mais
     // continuaria contando como gente dentro do hospital.
@@ -158,7 +210,12 @@ export function deactivate(tenantId: string, id: string): Promise<WriteUserResul
       data: { endedAt: new Date(), endReason: 'admin' },
     });
 
+    const emAndamento = await idsEmAndamento(tx, tenantId, id);
     const released = await releaseFromUser(tenantId, id, tx);
-    return { count: updated.count, releasedConversations: released.count };
+    return {
+      count: updated.count,
+      releasedConversations: released.count,
+      releasedConversationIds: emAndamento.map((c) => c.id),
+    };
   });
 }

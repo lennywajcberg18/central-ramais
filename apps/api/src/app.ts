@@ -2,6 +2,7 @@ import cors from 'cors';
 import express from 'express';
 import { config } from './config';
 import { errorHandler } from './middleware/error';
+import { prisma } from './prisma';
 import adminRouter from './routes/admin';
 import adminConversationsRouter from './routes/adminConversations';
 import agentRouter from './routes/agent';
@@ -19,8 +20,20 @@ export function createApp() {
 
   app.use(cors({ origin: config.WEB_ORIGIN }));
 
-  app.get('/health', (_req, res) => {
-    res.json({ ok: true });
+  // É o healthCheckPath do render.yaml: é com ele que o Render decide promover um
+  // deploy e se o serviço ainda está de pé. Um 200 que não toca dependência nenhuma
+  // deixa o painel verde com o Postgres fora do ar — nada reinicia, nada faz
+  // rollback, e toda requisição de atendente devolve 500 até alguém ligar
+  // reclamando. O SELECT 1 é o que transforma "processo vivo" em "serviço útil".
+  // Fica no app e não numa camada nova: é uma linha de SQL, não regra de negócio.
+  app.get('/health', async (_req, res) => {
+    try {
+      await prisma.$queryRaw`SELECT 1`;
+      res.json({ ok: true, db: 'up' });
+    } catch (err) {
+      console.error('[health] banco inalcançável:', err);
+      res.status(503).json({ ok: false, db: 'down' }); // 503 é o que faz o Render agir
+    }
   });
 
   // webhook usa urlencoded próprio (form do Twilio), antes do json global

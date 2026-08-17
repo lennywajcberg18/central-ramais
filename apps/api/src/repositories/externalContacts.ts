@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { prisma } from '../prisma';
 
 export function findByWaNumber(tenantId: string, waNumber: string) {
@@ -11,19 +12,25 @@ export function findById(tenantId: string, id: string) {
 }
 
 // Link nominal aceita um número só — este é o contato que já ocupa o link.
-export function findHolderOfLink(tenantId: string, entryLinkId: string) {
-  return prisma.externalContact.findFirst({
+// `client` existe para a leitura acontecer DENTRO da transação que travou a linha
+// do link: fora dela, conferir e gravar voltam a ser dois passos separados.
+export function findHolderOfLink(
+  tenantId: string,
+  entryLinkId: string,
+  client: Prisma.TransactionClient = prisma
+) {
+  return client.externalContact.findFirst({
     where: { tenantId, entryLinkId },
     select: { id: true, waNumber: true },
   });
 }
 
-export async function existsForLink(tenantId: string, entryLinkId: string): Promise<boolean> {
-  return (await findHolderOfLink(tenantId, entryLinkId)) !== null;
-}
-
-export function create(tenantId: string, input: { waNumber: string; entryLinkId: string }) {
-  return prisma.externalContact.create({
+export function create(
+  tenantId: string,
+  input: { waNumber: string; entryLinkId: string },
+  client: Prisma.TransactionClient = prisma
+) {
+  return client.externalContact.create({
     data: { tenantId, ...input },
   });
 }
@@ -57,8 +64,13 @@ export function setBlocked(tenantId: string, id: string, blocked: boolean) {
   });
 }
 
-export function reassignLink(tenantId: string, id: string, entryLinkId: string) {
-  return prisma.externalContact.updateMany({
+export function reassignLink(
+  tenantId: string,
+  id: string,
+  entryLinkId: string,
+  client: Prisma.TransactionClient = prisma
+) {
+  return client.externalContact.updateMany({
     where: { id, tenantId },
     data: { entryLinkId },
   });

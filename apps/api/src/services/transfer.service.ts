@@ -14,14 +14,22 @@ export interface TransferTarget {
 // Os destinos possíveis são os setores DO LINK da pessoa, nunca os do hospital.
 // Transferir para fora do link colocaria o externo num setor que o menu dele não
 // mostra — e o MENU seguinte o mandaria de volta, sem explicação nenhuma.
+//
+// O link é o VIGENTE do contato, não o `entryLinkId` gravado na conversa: quando o
+// admin reatribui o contato, o snapshot da conversa congela o escopo antigo e o
+// atendente passa a oferecer setores que o menu da pessoa já não mostra. O
+// snapshot existe para o histórico não virar mentira, não para autorizar.
 export async function listTransferTargets(
   tenantId: string,
   conversationId: string
 ): Promise<TransferTarget[]> {
-  const conversation = await conversations.findById(tenantId, conversationId);
+  const conversation = await conversations.findByIdWithRelations(tenantId, conversationId);
   if (!conversation) throw new NotFoundError();
 
-  const departments = await entryLinks.listDepartmentsForLink(tenantId, conversation.entryLinkId);
+  const departments = await entryLinks.listDepartmentsForLink(
+    tenantId,
+    conversation.externalContact.entryLinkId
+  );
   return departments.map((d) => ({
     id: d.id,
     name: d.name,
@@ -61,7 +69,12 @@ export async function transferConversation(
     throw new BadRequestError('esta pessoa ainda está escolhendo o setor pelo menu');
   }
 
-  const permitidos = await entryLinks.listDepartmentsForLink(tenantId, conversation.entryLinkId);
+  // Mesmo link vigente que monta a lista da tela: validar contra o snapshot da
+  // conversa aceitaria justamente o destino que a lista já não oferece.
+  const permitidos = await entryLinks.listDepartmentsForLink(
+    tenantId,
+    conversation.externalContact.entryLinkId
+  );
   const destino = permitidos.find((d) => d.id === targetDepartmentId);
   // 404 e não 403: quem pede um setor fora do link não recebe confirmação de que
   // ele existe, pela mesma razão que vale entre hospitais.

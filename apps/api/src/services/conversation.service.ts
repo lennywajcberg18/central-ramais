@@ -90,7 +90,17 @@ export async function sendMenu(
 // Escolha numérica validada contra a lista DO LINK — setor fora do escopo do
 // link é inválido mesmo existindo no tenant (falha de autorização, não de UX).
 export function parseMenuChoice(body: string, departments: Department[]): Department | null {
-  const trimmed = body.trim();
+  // O teclado de emoji do WhatsApp fica a um toque e entrega "1️⃣"; alguns IMEs
+  // entregam "１". `\d` não casa nenhum dos dois, e a 4ª recusa atribui a pessoa
+  // ao primeiro setor da lista — ela vira escolha do sistema, não dela.
+  // Só limpa as bordas: varrer todo não-dígito faria "falar com o 2º andar"
+  // virar a opção 2.
+  const trimmed = body
+    .normalize('NFKC')
+    .replace(/[\uFE0F\u20E3]/g, '') // seletor de variação e keycap do "1️⃣"
+    .trim()
+    .replace(/[.)\-]+$/, '')
+    .trim();
   if (!/^\d{1,2}$/.test(trimmed)) return null;
   const index = parseInt(trimmed, 10);
   if (index < 1 || index > departments.length) return null;

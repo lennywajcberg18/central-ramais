@@ -46,6 +46,8 @@ export default function AgentHeader() {
   const [confirmando, setConfirmando] = useState(false);
   const [encerrando, setEncerrando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
+  const [trocandoEstado, setTrocandoEstado] = useState(false);
+  const [erroEstado, setErroEstado] = useState<string | null>(null);
   const [, setTick] = useState(0);
   const menuRef = useRef<HTMLDivElement | null>(null);
 
@@ -91,15 +93,31 @@ export default function AgentHeader() {
   }, [menuAberto]);
 
   async function alternarDisponibilidade() {
-    if (!user) return;
+    if (!user || trocandoEstado) return;
     const proximo = user.availability === 'available' ? 'away' : 'available';
-    await api('/agent/availability', {
-      method: 'PATCH',
-      body: JSON.stringify({ availability: proximo }),
-    });
-    const atualizado = { ...user, availability: proximo } as SessionUser;
-    setUser(atualizado);
-    localStorage.setItem('user', JSON.stringify(atualizado));
+    setTrocandoEstado(true);
+    setErroEstado(null);
+    try {
+      await api('/agent/availability', {
+        method: 'PATCH',
+        body: JSON.stringify({ availability: proximo }),
+      });
+      const atualizado = { ...user, availability: proximo } as SessionUser;
+      setUser(atualizado);
+      localStorage.setItem('user', JSON.stringify(atualizado));
+    } catch {
+      // Falhar calado aqui é grave: quem achou que ficou ausente continua elegível
+      // para atribuição automática, a conversa fica 30 min sem resposta e é fechada
+      // por inatividade. O aviso diz o ESTADO em que a pessoa ficou, não que "a rede
+      // falhou" — é o estado que decide se o roteamento continua mandando conversa.
+      setErroEstado(
+        proximo === 'away'
+          ? 'Não deu para mudar. Você continua recebendo conversas.'
+          : 'Não deu para mudar. Você continua sem receber conversas.'
+      );
+    } finally {
+      setTrocandoEstado(false);
+    }
   }
 
   async function encerrarPlantao() {
@@ -161,7 +179,8 @@ export default function AgentHeader() {
           <Button
             type="button"
             variant="secondary"
-            onClick={alternarDisponibilidade}
+            disabled={trocandoEstado}
+            onClick={() => void alternarDisponibilidade()}
             title={
               user.availability === 'available'
                 ? 'Marcar como ausente — novas conversas param de chegar para você'
@@ -207,11 +226,12 @@ export default function AgentHeader() {
               <button
                 type="button"
                 role="menuitem"
+                disabled={trocandoEstado}
                 onClick={() => {
                   setMenuAberto(false);
                   void alternarDisponibilidade();
                 }}
-                className="flex min-h-12 w-full items-center gap-2 px-4 text-left text-sm text-ink-800 hover:bg-ink-50"
+                className="flex min-h-12 w-full items-center gap-2 px-4 text-left text-sm text-ink-800 hover:bg-ink-50 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Dot tone={estado.tone} />
                 {user.availability === 'available' ? 'Ficar ausente' : 'Ficar disponível'}
@@ -254,6 +274,17 @@ export default function AgentHeader() {
           )}
         </div>
       </div>
+
+      {/* Fora do menu do celular de propósito: o menu fecha ao tocar, e o aviso
+          precisa continuar na tela depois disso. */}
+      {erroEstado && (
+        <p
+          role="alert"
+          className="border-t border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-700 sm:px-6"
+        >
+          {erroEstado}
+        </p>
+      )}
 
       {confirmando && (
         <ConfirmDialog

@@ -1,4 +1,5 @@
-import { ShiftEndReason, ShiftSession } from '@prisma/client';
+import { Prisma, ShiftEndReason, ShiftSession } from '@prisma/client';
+import { prisma } from '../prisma';
 import * as conversations from '../repositories/conversations';
 import * as shifts from '../repositories/shifts';
 import * as tenants from '../repositories/tenants';
@@ -151,30 +152,72 @@ export interface EndShiftResult {
 }
 
 // Larga o que estava na mão da pessoa: devolve as conversas para a fila do ramal
-// e as reoferece na hora a quem continua de plantão no mesmo setor.
-// É o "um sai e o outro entra".
-async function releaseUserWork(tenantId: string, userId: string): Promise<number> {
-  const emAndamento = await conversations.listOpenAssignedTo(tenantId, userId);
-  const soltas = await conversations.releaseFromUser(tenantId, userId);
-  await users.setAvailability(tenantId, userId, 'offline');
+// e diz quais eram. Só a escrita — reoferecer é a etapa seguinte, e depende de o
+// plantão já estar fechado.
+async function releaseUserWork(
+  tenantId: string,
+  userId: string,
+  tx: Prisma.TransactionClient
+): Promise<{ count: number; ids: string[] }> {
+  // Lido ANTES do UPDATE: depois dele não há mais como saber quais conversas eram.
+  const emAndamento = await conversations.listOpenAssignedTo(tenantId, userId, tx);
+  const soltas = await conversations.releaseFromUser(tenantId, userId, tx);
+  return { count: soltas.count, ids: emAndamento.map((c) => c.id) };
+}
 
-  for (const conversation of emAndamento) {
-    await tryAssign(tenantId, conversation.id);
+// O "um sai e o outro entra": reoferece a quem continua de plantão no mesmo setor.
+// Fica fora da fase de escrita por duas razões. A sessão de quem saiu já tem que
+// estar fechada, senão o rodízio devolve a conversa para a própria pessoa que está
+// saindo. E uma falha aqui não pode derrubar o encerramento: a conversa já está
+// `open` na fila do setor, à vista de todo mundo, e o próximo colega disponível a
+// puxa — perder a reoferta atrasa, perder o encerramento deixa órfã.
+async function reofferConversations(tenantId: string, ids: string[]): Promise<void> {
+  for (const id of ids) {
+    try {
+      await tryAssign(tenantId, id);
+    } catch (err) {
+      console.error(`[shift] falha ao reoferecer a conversa ${id}:`, err);
+    }
   }
-  return soltas.count;
 }
 
 // Encerra o plantão da pessoa inteiro — usado quando é ela quem sai (botão) ou
 // quando o login encontra uma sessão vencida. Aqui fechar todas as sessões
 // abertas do usuário é o que se quer: sair no celular sai no computador também.
+//
+// A ordem é a garantia: soltar as conversas ANTES de gravar o fim. Na ordem
+// inversa, um erro no release devolvia 500 com a sessão já encerrada — o
+// middleware desloga o atendente e as conversas dele ficam `assigned` a um dono
+// sem acesso, invisíveis na fila do setor E na tela de todo mundo. Falhar antes do
+// `endedAt` só adia o fim do plantão, que o botão (ou o job) refaz.
 export async function endShift(
   tenantId: string,
   userId: string,
   reason: ShiftEndReason
 ): Promise<EndShiftResult> {
-  const fechadas = await shifts.closeSessionsOfUser(tenantId, userId, reason);
-  const soltas = await releaseUserWork(tenantId, userId);
-  return { closed: fechadas.count, releasedConversations: soltas };
+  // Fechar a sessão e soltar as conversas na MESMA transação, porque as duas
+  // ordens possíveis quebram uma coisa cada. Fechar antes e soltar depois: se o
+  // release falha, a pessoa perde o acesso com as conversas presas nela, fora da
+  // fila e fora da tela de todo mundo. Soltar antes e fechar depois: entre as duas
+  // escritas ela ainda consta de plantão e disponível, e o rodízio devolve para ela
+  // a conversa que acabou de ser solta — que é a corrida do cenário 9 do
+  // check-corridas. Juntas, nenhuma das duas janelas existe: ou as duas valem, ou
+  // nenhuma vale e o encerramento é tentado de novo.
+  const { fechadas, soltas } = await prisma.$transaction(async (tx) => {
+    // A disponibilidade vai PRIMEIRO: é o UPDATE nesta linha que o rodízio espera
+    // no `FOR UPDATE` do `assignToIfOnShift`. Soltar antes de travar a linha
+    // deixaria a atribuição concorrente entrar depois da varredura.
+    await users.setAvailability(tenantId, userId, 'offline', tx);
+    const f = await shifts.closeSessionsOfUser(tenantId, userId, reason, tx);
+    const s = await releaseUserWork(tenantId, userId, tx);
+    return { fechadas: f, soltas: s };
+  });
+
+  // Fora da transação, de propósito: reoferecer manda mensagem de WhatsApp, e
+  // efeito externo dentro de transação não tem como ser desfeito. Falhar aqui só
+  // atrasa — a conversa já está `open` na fila do setor, à vista de todos.
+  await reofferConversations(tenantId, soltas.ids);
+  return { closed: fechadas.count, releasedConversations: soltas.count };
 }
 
 // Varredura do job: fecha o que passou da hora, hospital por hospital.
@@ -186,22 +229,41 @@ export async function expireDueShifts(at: Date = new Date()): Promise<number> {
     const vencidas = await shifts.listExpiredSessions(tenant.id, at);
     for (const session of vencidas) {
       try {
-        // Fecha a sessão vencida, não "as sessões daquela pessoa": entre a
-        // varredura e esta linha o turno seguinte pode ter começado, e derrubar
-        // quem acabou de entrar é o pior momento possível — a troca de turno.
-        const fechada = await shifts.closeExpiredSession(tenant.id, session.id, at, 'schedule');
-        if (fechada.count === 0) continue;
-
-        // Já abriu o plantão seguinte? Então não há nada a largar: quem entrou
-        // puxou a fila e continua com as conversas dele.
+        // Já abriu o plantão seguinte — ou o admin esticou este? Então há sessão
+        // viva e não há nada a largar: quem entrou puxou a fila e continua com as
+        // conversas dele, e derrubar quem acabou de entrar é o pior momento
+        // possível — a troca de turno.
         const atual = await shifts.findOpenSessionForUser(tenant.id, session.userId);
-        if (atual && atual.endsAt > at) {
-          encerrados++;
-          continue;
-        }
+        const temPlantaoVivo = atual !== null && atual.endsAt > at;
 
-        await releaseUserWork(tenant.id, session.userId);
-        encerrados++;
+        // Soltar ANTES de gravar `endedAt`, pela mesma razão do `endShift` — só
+        // que aqui o estrago era permanente: com o fim já gravado, a sessão sai do
+        // `listExpiredSessions` (que filtra `endedAt: null`), a varredura NUNCA
+        // retenta e as conversas ficam órfãs para sempre, com uma linha de log
+        // como único sinal. Falhando antes, a mesma sessão volta na varredura do
+        // minuto seguinte, e o release é idempotente.
+        // Mesma transação do `endShift`, e pela mesma razão. Fecha primeiro para
+        // ter o `count`: a trava `endsAt <= at` do repositório é o que impede o job
+        // de encerrar um plantão que o admin esticou no meio do caminho, e nesse
+        // caso nada pode ser solto. Se o release falhar, a transação inteira volta
+        // atrás e a sessão continua vencida e aberta — a varredura do minuto
+        // seguinte tenta de novo, em vez de deixar as conversas órfãs para sempre.
+        const { fechada, soltas } = await prisma.$transaction(async (tx) => {
+          const f = await shifts.closeExpiredSession(tenant.id, session.id, at, 'schedule', tx);
+          if (f.count === 0 || temPlantaoVivo) {
+            return { fechada: f, soltas: { count: 0, ids: [] as string[] } };
+          }
+          await users.setAvailability(tenant.id, session.userId, 'offline', tx);
+          const s = await releaseUserWork(tenant.id, session.userId, tx);
+          return { fechada: f, soltas: s };
+        });
+        if (fechada.count > 0) encerrados++;
+
+        // Depois do fim gravado, nunca antes. `count` zero significa que a escala
+        // foi esticada na janela entre a conferência e o fechamento: a pessoa
+        // segue de plantão e disponível, e é o próprio rodízio que devolve as
+        // conversas para ela.
+        await reofferConversations(tenant.id, soltas.ids);
       } catch (err) {
         console.error(`[shift-job] falha ao encerrar plantão ${session.id}:`, err);
       }

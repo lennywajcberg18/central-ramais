@@ -50,8 +50,10 @@ router.get('/agent/conversations', async (req, res, next) => {
 
 router.get('/agent/conversations/:id/messages', async (req, res, next) => {
   try {
-    const { tenantId } = req.auth!;
-    const conversation = await conversations.findById(tenantId, req.params.id);
+    const { tenantId, userId } = req.auth!;
+    // Setor entra na conta junto com o tenant: a conversa tem que ser minha ou
+    // do meu setor, senão é histórico de paciente de quem não me diz respeito.
+    const conversation = await conversations.findByIdForAgent(tenantId, userId, req.params.id);
     if (!conversation) throw new NotFoundError();
     const rows = await messagesRepo.listByConversation(tenantId, conversation.id);
     res.json(
@@ -77,7 +79,7 @@ router.post('/agent/conversations/:id/messages', async (req, res, next) => {
     const parsed = sendSchema.safeParse(req.body);
     if (!parsed.success) throw new BadRequestError('body obrigatório');
 
-    const conversation = await conversations.findByIdWithRelations(tenantId, req.params.id);
+    const conversation = await conversations.findByIdForAgent(tenantId, userId, req.params.id);
     if (!conversation) throw new NotFoundError();
     if (conversation.status === 'closed' || conversation.status === 'awaiting_feedback') {
       throw new BadRequestError('conversa encerrada');
@@ -127,8 +129,8 @@ router.post('/agent/conversations/:id/messages', async (req, res, next) => {
 
 router.post('/agent/conversations/:id/close', async (req, res, next) => {
   try {
-    const { tenantId } = req.auth!;
-    const conversation = await conversations.findByIdWithRelations(tenantId, req.params.id);
+    const { tenantId, userId } = req.auth!;
+    const conversation = await conversations.findByIdForAgent(tenantId, userId, req.params.id);
     if (!conversation) throw new NotFoundError();
     if (conversation.status === 'closed') throw new BadRequestError('conversa já encerrada');
 
@@ -142,8 +144,13 @@ router.post('/agent/conversations/:id/close', async (req, res, next) => {
 // Para onde esta conversa pode ir: os setores do link da pessoa, não os do hospital.
 router.get('/agent/conversations/:id/transfer-targets', async (req, res, next) => {
   try {
-    const { tenantId } = req.auth!;
-    res.json(await listTransferTargets(tenantId, req.params.id));
+    const { tenantId, userId } = req.auth!;
+    // Mesma guarda de setor das outras rotas de conversa: sem ela, o id vazado
+    // já entregava os setores do link daquele contato para quem não atende.
+    const conversation = await conversations.findByIdForAgent(tenantId, userId, req.params.id);
+    if (!conversation) throw new NotFoundError();
+
+    res.json(await listTransferTargets(tenantId, conversation.id));
   } catch (err) {
     next(err);
   }
@@ -157,9 +164,14 @@ router.post('/agent/conversations/:id/transfer', async (req, res, next) => {
     const parsed = transferSchema.safeParse(req.body);
     if (!parsed.success) throw new BadRequestError('escolha o setor de destino');
 
+    // Encaminhar tira a conversa do setor onde ela está. Quem não atende nem o
+    // setor nem a conversa não move o atendimento de ninguém.
+    const conversation = await conversations.findByIdForAgent(tenantId, userId, req.params.id);
+    if (!conversation) throw new NotFoundError();
+
     const resultado = await transferConversation(
       tenantId,
-      req.params.id,
+      conversation.id,
       parsed.data.departmentId,
       userId
     );

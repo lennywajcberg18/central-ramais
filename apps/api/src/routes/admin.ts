@@ -12,13 +12,13 @@ import * as departments from '../repositories/departments';
 import * as entryLinks from '../repositories/entryLinks';
 import * as externalContacts from '../repositories/externalContacts';
 import * as shifts from '../repositories/shifts';
+import * as tenants from '../repositories/tenants';
 import * as users from '../repositories/users';
 import { closeConversation } from '../services/lifecycle.service';
 import { computeMetrics } from '../services/metrics.service';
-import { claimKey } from '../services/access.service';
 import { replaceSchedule } from '../services/shift.service';
-import { runSerialized } from '../utils/keyedQueue';
 import { buildPrefillText, generateEntryCode, generateSlug } from '../utils/ids';
+import { dayRangeInZone } from '../utils/shiftClock';
 import { normalizeKeyword } from '../utils/text';
 
 const router = Router();
@@ -355,8 +355,41 @@ const shiftEntrySchema = z
   })
   .refine((s) => s.startMinute !== s.endMinute, 'a faixa de plantão não pode ter duração zero');
 
+const MAX_FAIXAS_POR_DIA = 3;
+
 const shiftsPutSchema = z.object({
-  shifts: z.array(shiftEntrySchema).max(21, 'no máximo três faixas por dia'),
+  // O teto de 21 sozinho prometia "três por dia" e não entregava: 21 faixas no
+  // mesmo dia passavam, e faixas idênticas também. O editor do painel só mostra a
+  // primeira faixa de cada dia, então o excedente virava estado invisível que o
+  // admin não conseguia ver nem remover — e o plantão passava a ser regido por uma
+  // escala que ninguém enxerga.
+  shifts: z
+    .array(shiftEntrySchema)
+    .max(MAX_FAIXAS_POR_DIA * 7, 'no máximo três faixas de plantão por dia')
+    .superRefine((faixas, ctx) => {
+      const porDia = new Map<number, number>();
+      const vistas = new Set<string>();
+      for (const f of faixas) {
+        const quantas = (porDia.get(f.weekday) ?? 0) + 1;
+        porDia.set(f.weekday, quantas);
+        if (quantas > MAX_FAIXAS_POR_DIA) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'no máximo três faixas de plantão por dia',
+          });
+          return;
+        }
+        const assinatura = `${f.weekday}:${f.startMinute}:${f.endMinute}`;
+        if (vistas.has(assinatura)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'há duas faixas de plantão idênticas no mesmo dia',
+          });
+          return;
+        }
+        vistas.add(assinatura);
+      }
+    }),
 });
 
 router.get('/admin/users/:id/shifts', async (req, res, next) => {
@@ -467,6 +500,18 @@ router.post('/admin/entry-links/:id/revoke', async (req, res, next) => {
 
     const result = await entryLinks.revoke(tenantId, link.id, userId);
     if (result.count === 0) throw new ConflictError('este link já foi revogado');
+
+    // Revogar sem encerrar revoga só no papel: a conversa viva continua na tela do
+    // atendente e cada resposta sai de verdade pelo WhatsApp para quem acabou de
+    // perder o acesso. O corte só chegaria quando a pessoa escrevesse de novo, ou
+    // depois de 30 minutos parada. Sem CSAT, pelo mesmo critério do bloqueio de
+    // contato: não se pede nota a quem teve o acesso cortado.
+    const contatos = await externalContacts.listByLink(tenantId, link.id);
+    for (const contato of contatos) {
+      const ativa = await conversations.findActiveByContact(tenantId, contato.id);
+      if (ativa) await closeConversation(tenantId, ativa.id, 'access_revoked');
+    }
+
     res.json({ ok: true });
   } catch (err) {
     next(err);
@@ -534,15 +579,16 @@ router.patch('/admin/contacts/:id', async (req, res, next) => {
       }
       // A regra do link nominal (um número só) vale também pelo painel — dois
       // contatos no mesmo link nominal desligam o alerta de vazamento. Conferir e
-      // gravar entram na mesma fila do webhook: são os dois caminhos que disputam
-      // a posse do link, e separados os dois passavam pela conferência.
+      // gravar acontecem com a linha do link travada, a mesma trava do webhook:
+      // são os dois caminhos que disputam a posse, e separados os dois passavam
+      // pela conferência.
       if (link.kind === 'nominal') {
-        await runSerialized(claimKey(tenantId, link.id), async () => {
-          const holder = await externalContacts.findHolderOfLink(tenantId, link.id);
+        await entryLinks.withLinkClaim(tenantId, link.id, async (tx) => {
+          const holder = await externalContacts.findHolderOfLink(tenantId, link.id, tx);
           if (holder && holder.id !== contact.id) {
             throw new BadRequestError('este link nominal já está vinculado a outro número');
           }
-          const result = await externalContacts.reassignLink(tenantId, contact.id, link.id);
+          const result = await externalContacts.reassignLink(tenantId, contact.id, link.id, tx);
           if (result.count === 0) throw new NotFoundError();
         });
       } else {
@@ -572,17 +618,45 @@ router.patch('/admin/contacts/:id', async (req, res, next) => {
 
 // ---------- acessos negados e métricas ----------
 
+// Data pura, no calendário do hospital. O sufixo de hora que o painel mandava
+// (`T00:00:00`) é aceito e descartado: `z.coerce.date()` lia essa data-hora sem
+// offset como hora local do PROCESSO, então com o Node em UTC "hoje" para um
+// tenant em São Paulo começava às 21h de ontem — três horas de todo dia caíam no
+// relatório do dia seguinte.
+const localDateSchema = z
+  .string()
+  .regex(
+    /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(T.*)?$/,
+    'use uma data no formato AAAA-MM-DD'
+  )
+  .transform((v) => v.slice(0, 10));
+
 const rangeSchema = z.object({
-  from: z.coerce.date().optional(),
-  to: z.coerce.date().optional(),
+  from: localDateSchema.optional(),
+  to: localDateSchema.optional(),
   department_id: z.string().optional(),
 });
 
+// O fuso é o do tenant, não o do processo — é o mesmo `timezone` que já rege o
+// plantão. Dois hospitais em fusos diferentes precisam de janelas diferentes para
+// a mesma data.
+async function janelaDoTenant(
+  tenantId: string,
+  from?: string,
+  to?: string
+): Promise<{ from?: Date; to?: Date }> {
+  if (!from && !to) return {};
+  const tenant = await tenants.findById(tenantId);
+  return dayRangeInZone(tenant?.timezone ?? 'UTC', from, to);
+}
+
 router.get('/admin/access-attempts', async (req, res, next) => {
   try {
+    const { tenantId } = req.auth!;
     const parsed = rangeSchema.safeParse(req.query);
-    if (!parsed.success) throw new BadRequestError('período inválido');
-    res.json(await accessAttempts.list(req.auth!.tenantId, parsed.data.from, parsed.data.to));
+    if (!parsed.success) throw new BadRequestError(firstIssue(parsed.error, 'período inválido'));
+    const janela = await janelaDoTenant(tenantId, parsed.data.from, parsed.data.to);
+    res.json(await accessAttempts.list(tenantId, janela.from, janela.to));
   } catch (err) {
     next(err);
   }
@@ -590,11 +664,13 @@ router.get('/admin/access-attempts', async (req, res, next) => {
 
 router.get('/admin/metrics', async (req, res, next) => {
   try {
+    const { tenantId } = req.auth!;
     const parsed = rangeSchema.safeParse(req.query);
-    if (!parsed.success) throw new BadRequestError('período inválido');
-    const to = parsed.data.to ?? new Date();
-    const from = parsed.data.from ?? new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000);
-    res.json(await computeMetrics(req.auth!.tenantId, from, to, parsed.data.department_id));
+    if (!parsed.success) throw new BadRequestError(firstIssue(parsed.error, 'período inválido'));
+    const janela = await janelaDoTenant(tenantId, parsed.data.from, parsed.data.to);
+    const to = janela.to ?? new Date();
+    const from = janela.from ?? new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000);
+    res.json(await computeMetrics(tenantId, from, to, parsed.data.department_id));
   } catch (err) {
     next(err);
   }

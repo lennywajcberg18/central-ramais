@@ -12,10 +12,25 @@ export interface CreateThreadInput {
   createdByUserId: string;
 }
 
-export function create(tenantId: string, input: CreateThreadInput) {
-  return prisma.internalThread.create({
-    data: { tenantId, ...input },
-    include: COM_SETORES,
+// A thread e a primeira mensagem nascem juntas ou não nascem. Em escritas
+// separadas, uma falha no segundo insert (queda de conexão, timeout do pool)
+// deixava em /ramais uma linha "para o Faturamento" sem assunto nenhum — e
+// ninguém encerra o que não tem conteúdo, então ela contaria como conversa
+// aberta na ordenação para sempre.
+export function createWithFirstMessage(
+  tenantId: string,
+  input: CreateThreadInput,
+  message: Omit<CreateMessageInput, 'threadId'>
+) {
+  return prisma.$transaction(async (tx) => {
+    const thread = await tx.internalThread.create({
+      data: { tenantId, ...input },
+      include: COM_SETORES,
+    });
+    await tx.internalMessage.create({
+      data: { tenantId, threadId: thread.id, ...message },
+    });
+    return thread;
   });
 }
 

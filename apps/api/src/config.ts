@@ -7,6 +7,15 @@ try {
   // sem .env local — as variáveis precisam vir do ambiente
 }
 
+// Esquema faltando ou barra final passam por z.string() sem reclamar: a API sobe,
+// /health responde 200, e todo navegador recebe um Access-Control-Allow-Origin que
+// não bate com o Origin dele. O sintoma é "clico em Entrar e não acontece nada",
+// sem uma linha de log no servidor. Barrar no boot é o único lugar barato.
+const urlNormalizada = z
+  .string()
+  .url()
+  .transform((v) => v.replace(/\/$/, ''));
+
 const envSchema = z.object({
   DATABASE_URL: z.string().min(1),
   PORT: z.coerce.number().default(3001),
@@ -18,10 +27,19 @@ const envSchema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((v) => v === 'true'),
+  // Portão do seed de demonstração (scripts/seed-if-empty.ts). Ausente é o padrão
+  // seguro: um clone deste blueprint para um hospital de verdade não terá a
+  // variável e o banco novo não nasce com os administradores de senha fraca.
+  ALLOW_DEMO_SEED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
   // O Render injeta RENDER_EXTERNAL_URL com a URL pública do serviço — usar como
   // padrão evita repetir o domínio na configuração do deploy.
-  PUBLIC_BASE_URL: z.string().default(process.env.RENDER_EXTERNAL_URL ?? 'http://localhost:3001'),
-  WEB_ORIGIN: z.string().default('http://localhost:3000'),
+  PUBLIC_BASE_URL: urlNormalizada.default(
+    process.env.RENDER_EXTERNAL_URL ?? 'http://localhost:3001'
+  ),
+  WEB_ORIGIN: urlNormalizada.default('http://localhost:3000'),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -36,5 +54,29 @@ export const config = parsed.data;
 
 if (config.WHATSAPP_PROVIDER === 'twilio' && !config.TWILIO_AUTH_TOKEN) {
   console.error('[config] WHATSAPP_PROVIDER=twilio exige TWILIO_ACCOUNT_SID e TWILIO_AUTH_TOKEN');
+  process.exit(1);
+}
+
+// Um controle de segurança que vem desligado de fábrica só protege quem lembrou de
+// ligar. Sem assinatura, o webhook aceita POST anônimo da internet inteira — e o
+// único campo que resolve o tenant é o `To`, que é público por desenho (sai no 302
+// de /c/<slug> e no QR code). Daria para forjar mensagem dentro da conversa viva de
+// um paciente e para chutar entry_code até entrar num setor sem nunca ter link.
+if (config.WHATSAPP_PROVIDER === 'twilio' && !config.TWILIO_VALIDATE_WEBHOOK) {
+  console.error(
+    '[config] WHATSAPP_PROVIDER=twilio exige TWILIO_VALIDATE_WEBHOOK=true — sem assinatura o webhook aceita mensagem forjada de qualquer origem'
+  );
+  process.exit(1);
+}
+
+// O .env.example é versionado num repositório público. Quem seguir o README ao pé
+// da letra assina JWT com uma chave que qualquer pessoa lê no GitHub — e um token
+// {role:'admin'} forjado devolve, em GET /admin/entry-links, os códigos que
+// sustentam o segundo nível de autorização do produto.
+const JWT_SECRET_DE_EXEMPLO = 'dev-secret-troque-em-producao';
+if (config.JWT_SECRET === JWT_SECRET_DE_EXEMPLO) {
+  console.error(
+    '[config] JWT_SECRET é o valor de exemplo, público no repositório. Gere o seu: openssl rand -base64 32'
+  );
   process.exit(1);
 }

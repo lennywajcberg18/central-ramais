@@ -21,8 +21,12 @@
   --color-ink-100: #eef0f2;
   --color-ink-200: #e0e3e7;
   --color-ink-300: #c7ccd3;
-  --color-ink-400: #98a1ab;
-  --color-ink-500: #6b747f;
+  /* ink-400 e ink-500 carregam quase todo o texto secundário do produto — hint,
+     placeholder, descrição de painel. Nos valores antigos (#98a1ab e #6b747f)
+     reprovavam na WCAG AA num monitor de posto de enfermagem com brilho baixo:
+     2,62:1 sobre branco e 4,46:1 sobre ink-50. Estes passam. */
+  --color-ink-400: #7d8791;
+  --color-ink-500: #5f6873;
   --color-ink-600: #4d555f;
   --color-ink-700: #3a414a;
   --color-ink-800: #262b32;
@@ -81,6 +85,30 @@
   ::selection {
     background: var(--color-brand-200);
     color: var(--color-brand-900);
+  }
+}
+
+/* Quem liga "reduzir movimento" no sistema costuma fazer isso por enxaqueca
+   vestibular; o skeleton pulsando em loop em toda carga é sintoma acumulado num
+   app usado o plantão inteiro. Fora de @layer de propósito: precisa vencer os
+   utilitários do Tailwind, que são camada. Os três scrollIntoView passam
+   `behavior: 'smooth'` explicitamente e não obedecem a CSS — são tratados no JS. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  /* o skeleton ainda precisa dizer "carregando", só que parado */
+  .animate-pulse {
+    opacity: 0.7;
+  }
+
+  button:not(:disabled):active {
+    transform: none;
   }
 }
 

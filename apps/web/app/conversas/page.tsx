@@ -154,7 +154,9 @@ function ConversationLine({ row }: { row: ConversationRow }) {
               <span title={row.departmentName ? 'Setor' : 'A pessoa ainda não escolheu o setor'}>
                 {setor}
               </span>
-              <span className="mx-1.5 text-ink-300">·</span>
+              <span aria-hidden="true" className="mx-1.5 text-ink-300">
+                ·
+              </span>
               <span className="tabular" title="Número de fora">
                 {formatPhone(row.contactNumber)}
               </span>
@@ -278,9 +280,12 @@ export default function ConversasPage() {
       <AgentNav />
 
       <main className="space-y-5 px-4 pb-28 pt-5 sm:px-6 sm:pb-8">
-        <p className="px-1 text-sm text-ink-500">
-          Quem escreve de fora do hospital pelo WhatsApp aparece aqui.
-        </p>
+        <div className="px-1">
+          <h1 className="text-xl font-semibold text-ink-900">Atendimento</h1>
+          <p className="mt-1 text-sm text-ink-500">
+            Quem escreve de fora do hospital pelo WhatsApp aparece aqui.
+          </p>
+        </div>
 
         <ExplainCard>
           <ul className="list-disc space-y-1 pl-4">

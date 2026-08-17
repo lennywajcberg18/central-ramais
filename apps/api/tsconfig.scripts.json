@@ -1,0 +1,14 @@
+// Rede de tipos para o que o `build` não compila. O tsconfig.json emite para
+// dist/ e por isso só pode incluir src/ — scripts/ e prisma/seed.ts rodam por
+// tsx, que transpila sem checar, e são justamente a suíte de regressão e a única
+// forma de reconstruir o banco: um erro de tipo ali só aparecia em execução.
+// Este projeto não emite nada, então serve para checagem e mais nada.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    // rootDir volta para a raiz do app porque agora há entrada fora de src/.
+    "rootDir": "."
+  },
+  "include": ["src", "scripts", "prisma"]
+}

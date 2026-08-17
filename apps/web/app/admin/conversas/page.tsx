@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Badge,
   Button,
@@ -72,22 +72,58 @@ export default function AdminConversasPage() {
   const [erro, setErro] = useState<string | null>(null);
   const [aberta, setAberta] = useState<Detail | null>(null);
   const [carregandoDetalhe, setCarregandoDetalhe] = useState(false);
+  const [lidoEm, setLidoEm] = useState<string | null>(null);
+
+  // Com leitura automática há sempre mais de uma requisição em voo: se o gestor
+  // troca de filtro no meio de uma, a resposta antiga chega depois e repinta a
+  // lista com o filtro errado.
+  const requisicao = useRef(0);
+  const gaveta = useRef<HTMLElement>(null);
+  const origemDoFoco = useRef<HTMLElement | null>(null);
 
   const carregar = useCallback(async () => {
+    const daVez = ++requisicao.current;
     setErro(null);
     try {
-      setRows(await api<Row[]>(`/admin/conversations?situacao=${situacao}`));
+      const dados = await api<Row[]>(`/admin/conversations?situacao=${situacao}`);
+      if (daVez !== requisicao.current) return;
+      setRows(dados);
+      setLidoEm(new Date().toISOString());
     } catch (err) {
+      if (daVez !== requisicao.current) return;
       setErro(err instanceof Error ? err.message : 'não foi possível carregar');
     }
   }, [situacao]);
 
   useEffect(() => {
     setRows(null);
+    setLidoEm(null);
     carregar();
+    // A tela de quem gerencia fica aberta o dia inteiro. Sem releitura, o gestor
+    // olha uma fila lida de manhã, vê vazio e diz que está tudo certo.
+    const intervalo = setInterval(carregar, 10000);
+    return () => clearInterval(intervalo);
   }, [carregar]);
 
-  async function abrir(id: string) {
+  const gavetaAberta = aberta !== null || carregandoDetalhe;
+
+  useEffect(() => {
+    if (!gavetaAberta) return;
+    gaveta.current?.focus();
+    function aoTeclar(evento: KeyboardEvent) {
+      if (evento.key === 'Escape') setAberta(null);
+    }
+    document.addEventListener('keydown', aoTeclar);
+    return () => {
+      document.removeEventListener('keydown', aoTeclar);
+      // Sem devolver o foco à linha que abriu a gaveta, quem navega por teclado
+      // volta para o topo da página e perde o lugar na lista.
+      origemDoFoco.current?.focus();
+    };
+  }, [gavetaAberta]);
+
+  async function abrir(id: string, origem: HTMLElement) {
+    origemDoFoco.current = origem;
     setCarregandoDetalhe(true);
     try {
       setAberta(await api<Detail>(`/admin/conversations/${id}/messages`));
@@ -162,7 +198,7 @@ export default function AdminConversasPage() {
             {rows.map((c) => (
               <li key={c.id}>
                 <button
-                  onClick={() => abrir(c.id)}
+                  onClick={(e) => abrir(c.id, e.currentTarget)}
                   className="flex w-full flex-wrap items-center gap-x-4 gap-y-2 px-5 py-3 text-left hover:bg-ink-50"
                 >
                   <span className="min-w-[12rem] flex-1">
@@ -190,13 +226,30 @@ export default function AdminConversasPage() {
         )}
       </Panel>
 
-      {(aberta || carregandoDetalhe) && (
+      {lidoEm && (
+        <footer className="px-1 text-xs text-ink-400">
+          <time
+            dateTime={lidoEm}
+            className="tabular"
+            title="A lista se atualiza sozinha a cada 10 segundos"
+          >
+            atualizada {relativeTime(lidoEm)}
+          </time>
+        </footer>
+      )}
+
+      {gavetaAberta && (
         <div
           className="fixed inset-0 z-30 flex justify-end bg-ink-900/30"
           onClick={() => setAberta(null)}
         >
           <aside
-            className="flex h-full w-full max-w-lg flex-col bg-white shadow-[var(--shadow-lift)]"
+            ref={gaveta}
+            tabIndex={-1}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Histórico da conversa"
+            className="flex h-full w-full max-w-lg flex-col bg-white shadow-[var(--shadow-lift)] outline-none"
             onClick={(e) => e.stopPropagation()}
           >
             {carregandoDetalhe || !aberta ? (

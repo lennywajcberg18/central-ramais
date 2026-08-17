@@ -488,10 +488,13 @@ export default function LinksPage() {
             <div className="mt-2 grid gap-3 sm:grid-cols-2">
               {KINDS.map((kind) => {
                 const active = form.kind === kind;
+                // O rádio está em sr-only, então o contorno de foco global cai num
+                // elemento invisível: o cartão precisa vestir o foco por ele, e com
+                // contorno sólido — anel a 20% não chega aos 3:1 da WCAG 1.4.11.
                 return (
                   <label
                     key={kind}
-                    className={`flex cursor-pointer gap-3 rounded-xl border p-4 has-[:focus-visible]:ring-4 has-[:focus-visible]:ring-brand-500/20 ${
+                    className={`flex cursor-pointer gap-3 rounded-xl border p-4 has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-brand-600 ${
                       active
                         ? 'border-brand-500 bg-brand-50'
                         : 'border-ink-200 bg-white hover:border-ink-300 hover:bg-ink-50'
@@ -546,10 +549,12 @@ export default function LinksPage() {
               <div className="mt-2 flex flex-wrap gap-2">
                 {departments.map((d) => {
                   const checked = selectedDepts.includes(d.id);
+                  // Mesmo motivo do cartão acima: o checkbox real está em sr-only,
+                  // e escolher setor às cegas é justamente o erro que custa caro.
                   return (
                     <label
                       key={d.id}
-                      className={`inline-flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-2 text-sm has-[:focus-visible]:ring-4 has-[:focus-visible]:ring-brand-500/20 ${
+                      className={`inline-flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-2 text-sm has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-brand-600 ${
                         checked
                           ? 'border-brand-500 bg-brand-50 text-brand-800'
                           : 'border-ink-200 bg-white text-ink-700 hover:border-ink-300 hover:bg-ink-50'

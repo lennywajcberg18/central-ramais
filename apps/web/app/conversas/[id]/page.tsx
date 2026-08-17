@@ -2,9 +2,17 @@
 
 import { useParams, useRouter } from 'next/navigation';
 import { Fragment, FormEvent, ReactNode, useCallback, useEffect, useRef, useState } from 'react';
-import ConfirmDialog from '@/components/ConfirmDialog';
-import { Badge, Button, Dot, EmptyState, ExplainCard, Skeleton } from '@/components/ui';
-import { ApiError, api } from '@/lib/api';
+import ConfirmDialog, { useDialogoModal } from '@/components/ConfirmDialog';
+import {
+  Badge,
+  Button,
+  Dot,
+  EmptyState,
+  ExplainCard,
+  Skeleton,
+  comportamentoDeRolagem,
+} from '@/components/ui';
+import { ApiError, PREFIXO_RASCUNHO, api } from '@/lib/api';
 import { CONVERSATION_STATUS, formatPhone } from '@/lib/labels';
 
 interface TransferTarget {
@@ -59,6 +67,12 @@ function clockLabel(iso: string): string {
   return new Date(iso).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 }
 
+function resumoParaLeitor(m: MessageRow): string {
+  if (m.senderType === 'system') return `Resposta automática: ${m.body}`;
+  if (m.senderType === 'agent') return `Você enviou: ${m.body}`;
+  return `Nova mensagem: ${m.body}`;
+}
+
 export default function ConversaPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
@@ -77,12 +91,16 @@ export default function ConversaPage() {
   const [transferError, setTransferError] = useState<string | null>(null);
   const [closing, setClosing] = useState(false);
   const [closeError, setCloseError] = useState<string | null>(null);
+  const [saiuDaLista, setSaiuDaLista] = useState(false);
+  const [anuncio, setAnuncio] = useState('');
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const countRef = useRef(0);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // cada montagem do polling ganha um número; resposta de rodada antiga é descartada
   const runRef = useRef(0);
+  // separa o histórico que já estava na tela do que chegou depois
+  const carregouRef = useRef(false);
 
   const load = useCallback(async () => {
     const run = runRef.current;
@@ -97,16 +115,33 @@ export default function ConversaPage() {
       setLoadError(null);
       setLoaded(true);
       if (msgs.length !== countRef.current) {
+        const jaEstavaNaTela = carregouRef.current;
         countRef.current = msgs.length;
-        setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
+        const ultima = msgs[msgs.length - 1];
+        // anunciar na carga inicial faria o leitor de tela despejar a conversa
+        // inteira antes de a pessoa alcançar o campo de resposta
+        if (jaEstavaNaTela && ultima) setAnuncio(resumoParaLeitor(ultima));
+        setTimeout(
+          () => bottomRef.current?.scrollIntoView({ behavior: comportamentoDeRolagem() }),
+          50
+        );
       }
+      carregouRef.current = true;
     } catch (err) {
       if (runRef.current !== run) return;
+      // 404 não é falha de rede: a conversa foi encaminhada, encerrada por
+      // inatividade ou voltou para a fila. Insistir a cada 5 s só acumula erro
+      // no console e oferece botões de ações que já não existem.
+      if (err instanceof ApiError && err.status === 404) {
+        setSaiuDaLista(true);
+        return;
+      }
       setLoadError(readError(err, 'não foi possível falar com o servidor'));
     }
   }, [id]);
 
   useEffect(() => {
+    if (saiuDaLista) return;
     runRef.current += 1;
     void load();
     const interval = setInterval(() => void load(), 5000);
@@ -114,7 +149,27 @@ export default function ConversaPage() {
       runRef.current += 1;
       clearInterval(interval);
     };
-  }, [load]);
+  }, [load, saiuDaLista]);
+
+  // O fim do plantão derruba a sessão e recarrega a página em até 5 segundos,
+  // sem ninguém clicar em nada: sem guardar, a resposta já digitada some antes
+  // de ser enviada. Vive em sessionStorage para não passar para o próximo
+  // atendente do tablet compartilhado — quem limpa na troca é o saveSession.
+  const chaveRascunho = `${PREFIXO_RASCUNHO}${id}`;
+  const rascunhoRestaurado = useRef(false);
+
+  useEffect(() => {
+    const salvo = sessionStorage.getItem(chaveRascunho);
+    if (salvo) setDraft(salvo);
+    rascunhoRestaurado.current = true;
+  }, [chaveRascunho]);
+
+  useEffect(() => {
+    // gravar antes de restaurar apagaria o texto guardado com o campo ainda vazio
+    if (!rascunhoRestaurado.current) return;
+    if (draft) sessionStorage.setItem(chaveRascunho, draft);
+    else sessionStorage.removeItem(chaveRascunho);
+  }, [draft, chaveRascunho]);
 
   useEffect(() => {
     return () => {
@@ -122,19 +177,19 @@ export default function ConversaPage() {
     };
   }, []);
 
-  // Escape fecha, como em todos os outros diálogos do projeto. No meio do envio
-  // não fecha: a transferência já pode ter sido aceita do outro lado.
-  useEffect(() => {
-    if (!transferindo) return;
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape' && enviandoTransferencia === null) {
-        setTransferindo(false);
-        setTransferError(null);
-      }
-    }
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [transferindo, enviandoTransferencia]);
+  const caixaEncaminhar = useRef<HTMLDivElement>(null);
+
+  // No meio do envio não fecha: a transferência já pode ter sido aceita do
+  // outro lado.
+  const fecharEncaminhar = useCallback(() => {
+    if (enviandoTransferencia !== null) return;
+    setTransferindo(false);
+    setTransferError(null);
+  }, [enviandoTransferencia]);
+
+  // Escape e trava de Tab, como no ConfirmDialog: com o fundo alcançável, um
+  // Enter fora da caixa encerraria o atendimento sem a pessoa ver o botão.
+  useDialogoModal(transferindo, caixaEncaminhar, fecharEncaminhar);
 
   async function send(e: FormEvent) {
     e.preventDefault();
@@ -235,7 +290,7 @@ export default function ConversaPage() {
                   <span className="tabular">{formatPhone(conversation.contactNumber)}</span>
                 </p>
               </>
-            ) : loaded ? (
+            ) : loaded || saiuDaLista ? (
               <>
                 <h1 className="text-lg font-semibold text-brand-800">Conversa</h1>
                 <p className="mt-1 text-sm text-ink-600">Não está mais na sua lista.</p>
@@ -248,51 +303,79 @@ export default function ConversaPage() {
             )}
           </div>
 
-          <nav aria-label="Ações da conversa" className="flex shrink-0 gap-2">
+          {/* sem flex-wrap os três botões estouram a largura a 320px e a página
+              inteira passa a rolar de lado */}
+          <nav aria-label="Ações da conversa" className="flex flex-wrap gap-2">
             <Button variant="secondary" onClick={() => router.push('/conversas')}>
               <ArrowLeftIcon />
               Voltar
             </Button>
-            <Button variant="secondary" onClick={abrirTransferencia}>
-              Encaminhar
-            </Button>
-            <Button
-              variant="danger"
-              onClick={() => {
-                setCloseError(null);
-                setConfirmingClose(true);
-              }}
-            >
-              Encerrar
-            </Button>
+            {!saiuDaLista && (
+              <>
+                <Button variant="secondary" onClick={abrirTransferencia}>
+                  Encaminhar
+                </Button>
+                <Button
+                  variant="danger"
+                  onClick={() => {
+                    setCloseError(null);
+                    setConfirmingClose(true);
+                  }}
+                >
+                  Encerrar
+                </Button>
+              </>
+            )}
           </nav>
-        </div>
-
-        <div className="px-4 pb-4 sm:px-6">
-          <ExplainCard>
-            <ul className="list-disc space-y-1.5 pl-4">
-              <li>
-                <strong>Resposta automática</strong>: o sistema mandou sozinho, sem atendente.
-              </li>
-              <li>
-                Se a pessoa escrever <strong>MENU</strong>, ela volta à lista de setores que o link
-                dela permite.
-              </li>
-              <li>Sem mensagem nova por 30 minutos, a conversa encerra sozinha.</li>
-              <li>Ao encerrar, a pessoa recebe a pesquisa de satisfação.</li>
-            </ul>
-          </ExplainCard>
         </div>
       </header>
 
       <main className="chat-canvas flex-1 overflow-y-auto px-3 py-5 sm:px-6">
+        {/* A ajuda mora aqui, e não no cabeçalho: dentro de um h-dvh com main
+            flex-1, abri-la roubava altura das mensagens em vez de empurrá-las. */}
+        {!saiuDaLista && (
+          <div className="mx-auto mb-4 max-w-2xl">
+            <ExplainCard>
+              <ul className="list-disc space-y-1.5 pl-4">
+                <li>
+                  <strong>Resposta automática</strong>: o sistema mandou sozinho, sem atendente.
+                </li>
+                <li>
+                  Se a pessoa escrever <strong>MENU</strong>, ela volta à lista de setores que o link
+                  dela permite.
+                </li>
+                <li>Sem mensagem nova por 30 minutos, a conversa encerra sozinha.</li>
+                <li>Ao encerrar, a pessoa recebe a pesquisa de satisfação.</li>
+              </ul>
+            </ExplainCard>
+          </div>
+        )}
+
+        {/* região viva vazia desde o começo: se ela nascesse com o histórico
+            dentro, o leitor de tela poderia despejar a conversa inteira */}
+        <p aria-live="polite" className="sr-only">
+          {anuncio}
+        </p>
+
+        {saiuDaLista && (
+          <div className="mx-auto mt-8 max-w-md rounded-2xl border border-ink-200/70 bg-white p-6 text-center shadow-[var(--shadow-card)]">
+            <p className="font-medium text-ink-700">Esta conversa não está mais com você</p>
+            <p className="mt-1 text-sm leading-relaxed text-ink-500">
+              Ela foi encaminhada para outro setor, encerrada ou voltou para a fila.
+            </p>
+            <Button variant="secondary" className="mt-4" onClick={() => router.push('/conversas')}>
+              Ver minhas conversas
+            </Button>
+          </div>
+        )}
+
         {loaded && loadError && (
           <p className="sticky top-0 z-10 mx-auto mb-4 w-fit rounded-full bg-amber-100 px-3 py-1 text-xs font-medium text-amber-800 shadow-[var(--shadow-card)]">
             Sem atualizar agora. Tentando de novo…
           </p>
         )}
 
-        {!loaded && !loadError && (
+        {!loaded && !loadError && !saiuDaLista && (
           <div className="mx-auto flex max-w-2xl flex-col gap-3" aria-hidden="true">
             <Skeleton className="h-14 w-3/5 rounded-2xl" />
             <Skeleton className="h-10 w-2/5 self-end rounded-2xl" />
@@ -322,7 +405,7 @@ export default function ConversaPage() {
         )}
 
         {loaded && messages.length > 0 && (
-          <ol aria-live="polite" className="mx-auto flex max-w-2xl flex-col gap-1.5">
+          <ol className="mx-auto flex max-w-2xl flex-col gap-1.5">
             {messages.map((m, i) => {
               const previous = i > 0 ? messages[i - 1] : undefined;
               const newDay = !previous || !sameDay(previous.createdAt, m.createdAt);
@@ -345,6 +428,9 @@ export default function ConversaPage() {
         <div ref={bottomRef} className="h-px" />
       </main>
 
+      {/* sem o campo no estado "saiu da lista": qualquer envio daqui já falharia
+          e o texto digitado se perderia */}
+      {!saiuDaLista && (
       <form onSubmit={send} className="border-t border-ink-200 bg-white px-3 py-3 sm:px-6">
         {sendError && (
           <div
@@ -370,13 +456,15 @@ export default function ConversaPage() {
           <label htmlFor="resposta" className="sr-only">
             Sua resposta
           </label>
+          {/* text-base no celular: abaixo de 16px o Safari do iPhone amplia a
+              página a cada toque no campo e não desfaz o zoom ao sair */}
           <input
             id="resposta"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             placeholder="Escreva sua resposta"
             autoComplete="off"
-            className="min-w-0 flex-1 rounded-2xl border border-ink-300 bg-white px-4 py-3 text-sm outline-none placeholder:text-ink-400 focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10"
+            className="min-w-0 flex-1 rounded-2xl border border-ink-300 bg-white px-4 py-3 text-base outline-none placeholder:text-ink-400 focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10 sm:text-sm"
           />
           <button
             type="submit"
@@ -392,10 +480,12 @@ export default function ConversaPage() {
           {sending ? 'Enviando…' : sentFlash ? 'Mensagem enviada' : ''}
         </p>
       </form>
+      )}
 
       {transferindo && (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-ink-900/40 p-4 sm:items-center">
           <div
+            ref={caixaEncaminhar}
             role="dialog"
             aria-modal="true"
             aria-labelledby="titulo-encaminhar"
@@ -460,10 +550,7 @@ export default function ConversaPage() {
                 variant="secondary"
                 autoFocus
                 disabled={enviandoTransferencia !== null}
-                onClick={() => {
-                  setTransferindo(false);
-                  setTransferError(null);
-                }}
+                onClick={fecharEncaminhar}
               >
                 Cancelar
               </Button>

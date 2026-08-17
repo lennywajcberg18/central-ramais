@@ -39,8 +39,12 @@ router.post('/admin/simulator/inbound', async (req, res, next) => {
       throw new BadRequestError('este hospital não tem número de WhatsApp configurado');
     }
 
+    // O webhook descarta em silêncio o que não é E.164; aqui tem quem avisar.
+    const from = normalizeWaNumber(parsed.data.waNumber);
+    if (!from) throw new BadRequestError('número inválido');
+
     await handleInbound({
-      from: normalizeWaNumber(parsed.data.waNumber),
+      from,
       to: setup.whatsappNumber,
       body: parsed.data.body,
       messageSid: `SIM${randomUUID()}`,
@@ -56,7 +60,9 @@ router.get('/admin/simulator/thread', async (req, res, next) => {
   try {
     const waNumber = z.string().trim().min(8).max(20).safeParse(req.query.waNumber);
     if (!waNumber.success) throw new BadRequestError('número inválido');
-    res.json(await getTimeline(req.auth!.tenantId, normalizeWaNumber(waNumber.data)));
+    const numero = normalizeWaNumber(waNumber.data);
+    if (!numero) throw new BadRequestError('número inválido');
+    res.json(await getTimeline(req.auth!.tenantId, numero));
   } catch (err) {
     next(err);
   }

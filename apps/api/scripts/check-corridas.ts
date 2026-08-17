@@ -7,8 +7,10 @@
 //
 //   npm run check:corridas -w api
 //
-// Cuidado: mexe na escala dos atendentes e cria contatos/links de teste no banco
-// local. Não rode contra o banco de produção.
+// Cuidado: cria contatos e links de teste no banco local. Os cenários 7 a 9
+// mexem na escala, na disponibilidade e nos plantões dos atendentes, e devolvem
+// tudo ao estado anterior no fim — inclusive quando o script estoura no meio.
+// Não rode contra o banco de produção.
 import '../src/config';
 import { prisma } from '../src/prisma';
 import { closeWithCsat } from '../src/services/lifecycle.service';
@@ -61,16 +63,42 @@ async function main() {
     where: { tenantId, name: 'Enfermagem' },
   });
   const carlos = await prisma.user.findFirstOrThrow({
-    where: { email: 'agente1@hospitalvida.test' },
+    where: { tenantId, email: 'agente1@hospitalvida.test' },
   });
   const beatriz = await prisma.user.findFirstOrThrow({
-    where: { email: 'agente2@hospitalvida.test' },
+    where: { tenantId, email: 'agente2@hospitalvida.test' },
   });
 
-  // cria contato + conversa já no estado pedido, sem passar pelo webhook
+  // Uma execução que estoura no meio deixa o contato da rodada para trás, e a
+  // execução seguinte morre no UNIQUE (tenant_id, wa_number) antes de testar
+  // qualquer coisa. Limpar por PREFIXO levaria junto os contatos que o dono
+  // criou brincando no simulador — então apaga-se o número exato, e só ele.
+  async function garantirNumeroLivre(waNumber: string): Promise<void> {
+    const antigo = await prisma.externalContact.findFirst({
+      where: { tenantId, waNumber },
+      select: { id: true },
+    });
+    if (!antigo) return;
+    const convs = await prisma.conversation.findMany({
+      where: { tenantId, externalContactId: antigo.id },
+      select: { id: true },
+    });
+    for (const c of convs) await limpar(c.id, antigo.id);
+    await prisma.externalContact.deleteMany({ where: { tenantId, id: antigo.id } });
+  }
+
+  // cria contato + conversa já no estado pedido, sem passar pelo webhook.
+  //
+  // `assigned` nasce com `firstReplyAt` preenchido porque, desde a correção do
+  // CSAT, encerrar só pergunta a nota quando alguém do hospital de fato
+  // respondeu. Sem esta marca os cenários de encerramento duplo não teriam nota
+  // nenhuma para duplicar — passariam sem exercitar a corrida que existem para
+  // pegar.
   async function conversaEm(status: 'assigned' | 'awaiting_department' | 'open', sufixo: string) {
+    const waNumber = `+5521${sufixo}`;
+    await garantirNumeroLivre(waNumber);
     const contato = await prisma.externalContact.create({
-      data: { tenantId, waNumber: `+5521${sufixo}`, entryLinkId: medx.id },
+      data: { tenantId, waNumber, entryLinkId: medx.id },
     });
     const conversa = await prisma.conversation.create({
       data: {
@@ -82,17 +110,45 @@ async function main() {
         departmentId: status === 'awaiting_department' ? null : cardiologia.id,
         assignedUserId: status === 'assigned' ? carlos.id : null,
         assignedAt: status === 'assigned' ? new Date() : null,
+        firstAssignedAt: status === 'assigned' ? new Date() : null,
+        firstReplyAt: status === 'assigned' ? new Date() : null,
         status,
       },
     });
     return { contato, conversa };
   }
 
-  async function limpar(conversaId: string, contatoId: string) {
-    await prisma.message.deleteMany({ where: { conversationId: conversaId } });
-    await prisma.feedback.deleteMany({ where: { conversationId: conversaId } });
-    await prisma.conversation.deleteMany({ where: { id: conversaId } });
-    await prisma.externalContact.deleteMany({ where: { id: contatoId } });
+  // Limpa pelo CONTATO, não pela conversa: vários cenários acabam com o externo
+  // tendo mais de uma conversa (a mensagem que chega depois de um encerramento
+  // abre conversa nova, por desenho). Apagar só a conversa conhecida deixava a
+  // segunda presa na FK e derrubava a suíte no meio.
+  //
+  // messages e feedback não têm tenant_id próprio; o filtro vem pela conversa,
+  // como em repositories/messages.ts
+  async function limpar(_conversaId: string, contatoId: string) {
+    const doContato = { tenantId, externalContactId: contatoId };
+    await prisma.message.deleteMany({ where: { conversation: doContato } });
+    await prisma.feedback.deleteMany({ where: { conversation: doContato } });
+    await prisma.conversation.deleteMany({ where: doContato });
+    await prisma.externalContact.deleteMany({ where: { tenantId, id: contatoId } });
+  }
+
+  // O job de inatividade não encerra qualquer conversa: ele varre só
+  // `assigned | awaiting_department | awaiting_menu_confirm` paradas há mais de 30
+  // min (listStaleForTimeout). Chamar `closeWithCsat` direto pularia os dois
+  // filtros e cobraria do produto uma garantia que a produção não precisa dar —
+  // depois de um encaminhamento a conversa fica `open` e com `lastMessageAt`
+  // recém-tocado pelo aviso ao externo, fora do alcance do job por meia hora.
+  // A corrida continua exercitada: o encaminhamento pode entrar entre a leitura
+  // aqui e a escrita lá dentro.
+  const STATUS_DO_JOB = ['assigned', 'awaiting_department', 'awaiting_menu_confirm'];
+  async function varreduraDoJob(conversaId: string): Promise<void> {
+    const atual = await prisma.conversation.findFirst({
+      where: { tenantId, id: conversaId },
+      select: { status: true },
+    });
+    if (!atual || !STATUS_DO_JOB.includes(atual.status)) return;
+    await closeWithCsat(tenantId, conversaId, 'timeout');
   }
 
   // ---------------------------------------------------------------- 1
@@ -106,7 +162,12 @@ async function main() {
       closeWithCsat(tenantId, conversa.id, 'timeout'),
     ]);
     const perguntas = await prisma.message.count({
-      where: { conversationId: conversa.id, senderType: 'system', direction: 'outbound' },
+      where: {
+        conversationId: conversa.id,
+        conversation: { tenantId },
+        senderType: 'system',
+        direction: 'outbound',
+      },
     });
     // exatamente uma: zero significaria que a guarda barrou os DOIS caminhos
     if (perguntas !== 1) falhas++;
@@ -132,10 +193,12 @@ async function main() {
         () => false
       ),
       new Promise<void>((ok) => setTimeout(ok, r)).then(() =>
-        closeWithCsat(tenantId, conversa.id, 'timeout')
+        varreduraDoJob(conversa.id)
       ),
     ]);
-    const depois = await prisma.conversation.findFirstOrThrow({ where: { id: conversa.id } });
+    const depois = await prisma.conversation.findFirstOrThrow({
+      where: { tenantId, id: conversa.id },
+    });
     // zumbi = o encaminhamento foi aceito E a conversa acabou encerrada
     const zumbi =
       encaminhou && (depois.status === 'awaiting_feedback' || depois.status === 'closed');
@@ -171,7 +234,12 @@ async function main() {
       ])
     ).reduce((a, b) => a + b, 0);
     const avisos = await prisma.message.count({
-      where: { conversationId: conversa.id, senderType: 'system', body: { contains: 'encaminhado' } },
+      where: {
+        conversationId: conversa.id,
+        conversation: { tenantId },
+        senderType: 'system',
+        body: { contains: 'encaminhado' },
+      },
     });
     // exatamente um: zero significaria que ninguém conseguiu encaminhar
     if (avisos !== 1) falhas++;
@@ -188,6 +256,7 @@ async function main() {
   console.log('   (a conversa ressuscitava com closed_at e close_reason gravados)');
   falhas = 0;
   for (let r = 1; r <= RODADAS; r++) {
+    await garantirNumeroLivre(`+55219004${r}00`);
     const contato = await prisma.externalContact.create({
       data: { tenantId, waNumber: `+55219004${r}00`, entryLinkId: medx.id },
     });
@@ -213,7 +282,9 @@ async function main() {
         closeWithCsat(tenantId, conversa.id, 'timeout')
       ),
     ]);
-    const depois = await prisma.conversation.findFirstOrThrow({ where: { id: conversa.id } });
+    const depois = await prisma.conversation.findFirstOrThrow({
+      where: { tenantId, id: conversa.id },
+    });
     const viva = depois.status === 'open' || depois.status === 'assigned';
     const zumbi = viva && depois.closedAt !== null;
     if (zumbi) falhas++;
@@ -242,6 +313,7 @@ async function main() {
       },
     });
     const numeros = [`+5521900500${r}1`, `+5521900500${r}2`];
+    for (const n of numeros) await garantirNumeroLivre(n);
     await Promise.all(
       numeros.map((n) =>
         handleInbound({
@@ -264,15 +336,21 @@ async function main() {
         `${donos.length > 1 ? '  <-- DOIS DONOS' : donos.length === 0 ? '  <-- NINGUÉM ENTROU' : ''}`
     );
     const ids = donos.map((d) => d.id);
-    const convs = await prisma.conversation.findMany({ where: { externalContactId: { in: ids } } });
+    const convs = await prisma.conversation.findMany({
+      where: { tenantId, externalContactId: { in: ids } },
+    });
     for (const c of convs) {
-      await prisma.message.deleteMany({ where: { conversationId: c.id } });
+      await prisma.message.deleteMany({
+        where: { conversationId: c.id, conversation: { tenantId } },
+      });
     }
-    await prisma.conversation.deleteMany({ where: { externalContactId: { in: ids } } });
-    await prisma.externalContact.deleteMany({ where: { id: { in: ids } } });
+    await prisma.conversation.deleteMany({ where: { tenantId, externalContactId: { in: ids } } });
+    await prisma.externalContact.deleteMany({ where: { tenantId, id: { in: ids } } });
     await prisma.accessAttempt.deleteMany({ where: { tenantId, entryCodeTried: `TST${r}` } });
-    await prisma.entryLinkDepartment.deleteMany({ where: { entryLinkId: link.id } });
-    await prisma.entryLink.deleteMany({ where: { id: link.id } });
+    await prisma.entryLinkDepartment.deleteMany({
+      where: { entryLinkId: link.id, entryLink: { tenantId } },
+    });
+    await prisma.entryLink.deleteMany({ where: { tenantId, id: link.id } });
   }
   registrar('link nominal com dois donos', falhas, RODADAS);
 
@@ -281,6 +359,7 @@ async function main() {
   console.log('   (sobrava conversa ativa de contato bloqueado, presa na fila)');
   falhas = 0;
   for (let r = 1; r <= RODADAS; r++) {
+    await garantirNumeroLivre(`+55219006${r}00`);
     const contato = await prisma.externalContact.create({
       data: { tenantId, waNumber: `+55219006${r}00`, entryLinkId: medx.id },
     });
@@ -315,121 +394,175 @@ async function main() {
     console.log(
       `  rodada ${r}: conversas ativas de contato bloqueado=${presas}${presas > 0 ? '  <-- PRESA' : ''}`
     );
-    const convs = await prisma.conversation.findMany({ where: { externalContactId: contato.id } });
+    const convs = await prisma.conversation.findMany({
+      where: { tenantId, externalContactId: contato.id },
+    });
     for (const c of convs) await limpar(c.id, contato.id);
-    await prisma.externalContact.deleteMany({ where: { id: contato.id } });
+    await prisma.externalContact.deleteMany({ where: { tenantId, id: contato.id } });
   }
   registrar('bloqueio x mensagem em voo', falhas, RODADAS);
 
-  // ---------------------------------------------------------------- 7
-  console.log('7) login pelo celular e pelo computador ao mesmo tempo');
-  console.log('   (abria duas sessões de plantão e o job deixava de devolver as conversas)');
-  await escalaIntegral(tenantId, beatriz.id);
-  falhas = 0;
-  for (let r = 1; r <= RODADAS; r++) {
-    await prisma.shiftSession.deleteMany({ where: { tenantId, userId: beatriz.id } });
-    await Promise.all([
-      openShiftForUser(tenantId, beatriz.id),
-      openShiftForUser(tenantId, beatriz.id),
-    ]);
-    const abertas = await prisma.shiftSession.count({
-      where: { tenantId, userId: beatriz.id, endedAt: null },
-    });
-    if (abertas > 1) falhas++;
-    console.log(`  rodada ${r}: sessões de plantão abertas=${abertas}${abertas > 1 ? '  <-- DUAS' : ''}`);
+  // ------------------------------------------------ estado de plantão (7 a 9)
+  // Os cenários abaixo apagam escala, disponibilidade e sessões de plantão do
+  // Carlos e da Beatriz para conseguir forçar as corridas. Sem devolver isso no
+  // fim, o check imprime PASSOU tendo deixado o atendente sem nenhuma faixa de
+  // escala, e o próximo login dele leva 403 "Você ainda não tem escala de
+  // plantão cadastrada" — a mesma falha que a migration de escala inicial
+  // existe para evitar. Quem roda o check não tem como saber que foi ele.
+  const plantonistas = [carlos.id, beatriz.id];
+  const escalaOriginal = await prisma.shift.findMany({
+    where: { tenantId, userId: { in: plantonistas } },
+  });
+  const sessoesOriginais = await prisma.shiftSession.findMany({
+    where: { tenantId, userId: { in: plantonistas } },
+  });
+  const disponibilidadeOriginal = await prisma.user.findMany({
+    where: { tenantId, role: 'agent' },
+    select: { id: true, availability: true },
+  });
+
+  async function restaurarPlantoes() {
+    await prisma.shift.deleteMany({ where: { tenantId, userId: { in: plantonistas } } });
+    if (escalaOriginal.length > 0) {
+      await prisma.shift.createMany({ data: escalaOriginal });
+    }
+    await prisma.shiftSession.deleteMany({ where: { tenantId, userId: { in: plantonistas } } });
+    if (sessoesOriginais.length > 0) {
+      await prisma.shiftSession.createMany({ data: sessoesOriginais });
+    }
+    for (const u of disponibilidadeOriginal) {
+      await prisma.user.updateMany({
+        where: { tenantId, id: u.id },
+        data: { availability: u.availability },
+      });
+    }
   }
-  registrar('login duplo (duas sessões de plantão)', falhas, RODADAS);
 
-  // ---------------------------------------------------------------- 8
-  console.log('8) admin salvando a escala no mesmo instante do login');
-  console.log('   (a pessoa entrava de plantão com a escala que acabara de sumir)');
-  falhas = 0;
-  // Controle: sem o admin no meio, o login TEM que abrir plantão. Sem esta
-  // rodada, um login que recusasse sempre passaria no teste sem provar nada.
-  await escalaIntegral(tenantId, beatriz.id);
-  await prisma.shiftSession.deleteMany({ where: { tenantId, userId: beatriz.id } });
-  const controle8 = await openShiftForUser(tenantId, beatriz.id);
-  console.log(`  controle (sem corrida): login ${controle8.ok ? 'aceito' : 'RECUSADO'}`);
-  if (!controle8.ok) falhas++;
+  try {
+    // -------------------------------------------------------------- 7
+    console.log('7) login pelo celular e pelo computador ao mesmo tempo');
+    console.log('   (abria duas sessões de plantão e o job deixava de devolver as conversas)');
+    await escalaIntegral(tenantId, beatriz.id);
+    falhas = 0;
+    for (let r = 1; r <= RODADAS; r++) {
+      await prisma.shiftSession.deleteMany({ where: { tenantId, userId: beatriz.id } });
+      await Promise.all([
+        openShiftForUser(tenantId, beatriz.id),
+        openShiftForUser(tenantId, beatriz.id),
+      ]);
+      const abertas = await prisma.shiftSession.count({
+        where: { tenantId, userId: beatriz.id, endedAt: null },
+      });
+      if (abertas > 1) falhas++;
+      console.log(
+        `  rodada ${r}: sessões de plantão abertas=${abertas}${abertas > 1 ? '  <-- DUAS' : ''}`
+      );
+    }
+    registrar('login duplo (duas sessões de plantão)', falhas, RODADAS);
 
-  for (let r = 1; r <= RODADAS; r++) {
+    // -------------------------------------------------------------- 8
+    console.log('8) admin salvando a escala no mesmo instante do login');
+    console.log('   (a pessoa entrava de plantão com a escala que acabara de sumir)');
+    falhas = 0;
+    // Controle: sem o admin no meio, o login TEM que abrir plantão. Sem esta
+    // rodada, um login que recusasse sempre passaria no teste sem provar nada.
     await escalaIntegral(tenantId, beatriz.id);
     await prisma.shiftSession.deleteMany({ where: { tenantId, userId: beatriz.id } });
-    await Promise.all([
-      openShiftForUser(tenantId, beatriz.id),
-      // o admin tira a pessoa da escala pelo painel
-      replaceSchedule(tenantId, beatriz.id, []),
-    ]);
-    const faixas = await prisma.shift.count({ where: { tenantId, userId: beatriz.id } });
-    const abertas = await prisma.shiftSession.count({
-      where: { tenantId, userId: beatriz.id, endedAt: null },
-    });
-    const orfa = faixas === 0 && abertas > 0;
-    if (orfa) falhas++;
-    console.log(
-      `  rodada ${r}: faixas de escala=${faixas} plantões abertos=${abertas}` +
-        `${orfa ? '  <-- DE PLANTÃO SEM ESCALA' : ''}`
-    );
-  }
-  registrar('escala x login (plantão órfão)', falhas, RODADAS);
+    const controle8 = await openShiftForUser(tenantId, beatriz.id);
+    console.log(`  controle (sem corrida): login ${controle8.ok ? 'aceito' : 'RECUSADO'}`);
+    if (!controle8.ok) falhas++;
 
-  // ---------------------------------------------------------------- 9
-  console.log('9) rodízio entregando a conversa a quem encerra o plantão no mesmo instante');
-  console.log('   (a conversa ficava com quem já saiu — fora da fila e fora da tela de todos)');
-  await escalaIntegral(tenantId, carlos.id);
-  falhas = 0;
+    for (let r = 1; r <= RODADAS; r++) {
+      await escalaIntegral(tenantId, beatriz.id);
+      await prisma.shiftSession.deleteMany({ where: { tenantId, userId: beatriz.id } });
+      await Promise.all([
+        openShiftForUser(tenantId, beatriz.id),
+        // o admin tira a pessoa da escala pelo painel
+        replaceSchedule(tenantId, beatriz.id, []),
+      ]);
+      const faixas = await prisma.shift.count({ where: { tenantId, userId: beatriz.id } });
+      const abertas = await prisma.shiftSession.count({
+        where: { tenantId, userId: beatriz.id, endedAt: null },
+      });
+      const orfa = faixas === 0 && abertas > 0;
+      if (orfa) falhas++;
+      console.log(
+        `  rodada ${r}: faixas de escala=${faixas} plantões abertos=${abertas}` +
+          `${orfa ? '  <-- DE PLANTÃO SEM ESCALA' : ''}`
+      );
+    }
+    registrar('escala x login (plantão órfão)', falhas, RODADAS);
 
-  // Controle: com ele de plantão e ninguém saindo, o rodízio TEM que entregar a
-  // conversa. Sem isto, um `assignToIfOnShift` que nunca atribuísse — SQL cru com
-  // tipo errado, por exemplo — passaria neste teste sem ter fechado nada.
-  await prisma.shiftSession.deleteMany({ where: { tenantId, userId: carlos.id } });
-  await openShiftForUser(tenantId, carlos.id);
-  await prisma.user.updateMany({
-    where: { tenantId, id: { not: carlos.id }, role: 'agent' },
-    data: { availability: 'offline' },
-  });
-  const ctrl = await conversaEm('open', '9009000');
-  await tryAssign(tenantId, ctrl.conversa.id);
-  const ctrlDepois = await prisma.conversation.findFirstOrThrow({ where: { id: ctrl.conversa.id } });
-  const atribuiu = ctrlDepois.assignedUserId === carlos.id;
-  console.log(`  controle (sem corrida): rodízio ${atribuiu ? 'atribuiu' : 'NÃO ATRIBUIU'}`);
-  if (!atribuiu) falhas++;
-  await limpar(ctrl.conversa.id, ctrl.contato.id);
+    // -------------------------------------------------------------- 9
+    console.log('9) rodízio entregando a conversa a quem encerra o plantão no mesmo instante');
+    console.log('   (a conversa ficava com quem já saiu — fora da fila e fora da tela de todos)');
+    await escalaIntegral(tenantId, carlos.id);
+    falhas = 0;
 
-  for (let r = 1; r <= RODADAS; r++) {
+    // Controle: com ele de plantão e ninguém saindo, o rodízio TEM que entregar a
+    // conversa. Sem isto, um `assignToIfOnShift` que nunca atribuísse — SQL cru com
+    // tipo errado, por exemplo — passaria neste teste sem ter fechado nada.
     await prisma.shiftSession.deleteMany({ where: { tenantId, userId: carlos.id } });
-    await prisma.user.updateMany({ where: { id: carlos.id }, data: { availability: 'available' } });
     await openShiftForUser(tenantId, carlos.id);
-    // só o Carlos elegível: os outros da Cardiologia ficam fora do rodízio
     await prisma.user.updateMany({
       where: { tenantId, id: { not: carlos.id }, role: 'agent' },
       data: { availability: 'offline' },
     });
-    const { conversa, contato } = await conversaEm('open', `9009${r}00`);
-
-    await Promise.all([
-      tryAssign(tenantId, conversa.id),
-      // ele clica em "encerrar plantão" no meio do caminho — pelo caminho real,
-      // que é quem devolve as conversas dele para a fila
-      new Promise<void>((ok) => setTimeout(ok, r * 4)).then(() =>
-        endShift(tenantId, carlos.id, 'manual')
-      ),
-    ]);
-
-    const depois = await prisma.conversation.findFirstOrThrow({ where: { id: conversa.id } });
-    const sessaoViva = await prisma.shiftSession.count({
-      where: { tenantId, userId: carlos.id, endedAt: null },
+    const ctrl = await conversaEm('open', '9009000');
+    await tryAssign(tenantId, ctrl.conversa.id);
+    const ctrlDepois = await prisma.conversation.findFirstOrThrow({
+      where: { tenantId, id: ctrl.conversa.id },
     });
-    // presa = atribuída a alguém que já não tem plantão aberto
-    const presa = depois.assignedUserId !== null && sessaoViva === 0;
-    if (presa) falhas++;
-    console.log(
-      `  rodada ${r}: status=${depois.status} dono=${depois.assignedUserId ? 'Carlos' : '(fila)'}` +
-        ` plantão dele=${sessaoViva > 0 ? 'aberto' : 'encerrado'}${presa ? '  <-- ENTREGUE A QUEM SAIU' : ''}`
-    );
-    await limpar(conversa.id, contato.id);
+    const atribuiu = ctrlDepois.assignedUserId === carlos.id;
+    console.log(`  controle (sem corrida): rodízio ${atribuiu ? 'atribuiu' : 'NÃO ATRIBUIU'}`);
+    if (!atribuiu) falhas++;
+    await limpar(ctrl.conversa.id, ctrl.contato.id);
+
+    for (let r = 1; r <= RODADAS; r++) {
+      await prisma.shiftSession.deleteMany({ where: { tenantId, userId: carlos.id } });
+      await prisma.user.updateMany({
+        where: { tenantId, id: carlos.id },
+        data: { availability: 'available' },
+      });
+      await openShiftForUser(tenantId, carlos.id);
+      // só o Carlos elegível: os outros da Cardiologia ficam fora do rodízio
+      await prisma.user.updateMany({
+        where: { tenantId, id: { not: carlos.id }, role: 'agent' },
+        data: { availability: 'offline' },
+      });
+      const { conversa, contato } = await conversaEm('open', `9009${r}00`);
+
+      await Promise.all([
+        tryAssign(tenantId, conversa.id),
+        // ele clica em "encerrar plantão" no meio do caminho — pelo caminho real,
+        // que é quem devolve as conversas dele para a fila
+        new Promise<void>((ok) => setTimeout(ok, r * 4)).then(() =>
+          endShift(tenantId, carlos.id, 'manual')
+        ),
+      ]);
+
+      const depois = await prisma.conversation.findFirstOrThrow({
+        where: { tenantId, id: conversa.id },
+      });
+      const sessaoViva = await prisma.shiftSession.count({
+        where: { tenantId, userId: carlos.id, endedAt: null },
+      });
+      // presa = atribuída a alguém que já não tem plantão aberto
+      const presa = depois.assignedUserId !== null && sessaoViva === 0;
+      if (presa) falhas++;
+      console.log(
+        `  rodada ${r}: status=${depois.status} dono=${depois.assignedUserId ? 'Carlos' : '(fila)'}` +
+          ` plantão dele=${sessaoViva > 0 ? 'aberto' : 'encerrado'}${presa ? '  <-- ENTREGUE A QUEM SAIU' : ''}`
+      );
+      await limpar(conversa.id, contato.id);
+    }
+    registrar('rodízio x fim de plantão (conversa presa)', falhas, RODADAS);
+  } finally {
+    // No finally e não no fim do bloco: um cenário que estoure no meio deixa a
+    // escala apagada do mesmo jeito, e aí ninguém desconfia do script.
+    await restaurarPlantoes();
+    console.log('  (escala, disponibilidade e plantões devolvidos ao estado anterior)\n');
   }
-  registrar('rodízio x fim de plantão (conversa presa)', falhas, RODADAS);
 
   // ---------------------------------------------------------------- fim
   console.log('='.repeat(72));

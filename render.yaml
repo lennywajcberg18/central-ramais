@@ -18,11 +18,14 @@ services:
       npm run build -w @central/shared &&
       npx prisma generate --schema apps/api/prisma/schema.prisma &&
       npm run build -w api
-    # migrate deploy aplica as migrations; o seed só roda se o banco estiver vazio
+    # migrate deploy aplica as migrations; o seed só roda com ALLOW_DEMO_SEED=true
+    # e o banco vazio, e derruba o deploy se falhar — API sem tenant é inútil.
     startCommand: >-
       npx prisma migrate deploy --schema apps/api/prisma/schema.prisma &&
       npx tsx apps/api/scripts/seed-if-empty.ts &&
       node apps/api/dist/index.js
+    # /health faz SELECT 1 no Postgres: 503 com o banco fora é o que faz o Render
+    # reiniciar o serviço e barrar a promoção de um deploy que não conecta.
     healthCheckPath: /health
     envVars:
       - key: NODE_VERSION
@@ -35,6 +38,26 @@ services:
         generateValue: true
       - key: WHATSAPP_PROVIDER
         value: mock
+      # --- Twilio: contrato do boot, para quem for ligar a integração ---
+      # Trocar WHATSAPP_PROVIDER para "twilio" pelo painel exige as três variáveis
+      # abaixo. Faltando TWILIO_AUTH_TOKEN ou TWILIO_VALIDATE_WEBHOOK=true, o
+      # processo sai com 1 no boot (apps/api/src/config.ts) — de propósito: um
+      # webhook sem validação de assinatura aceita mensagem forjada de qualquer
+      # origem, e o único campo que resolve o tenant (`To`) é público.
+      # SID e token ficam comentados porque são segredo: preencha no painel do
+      # Render, nunca neste arquivo, que é versionado num repositório público.
+      # - key: TWILIO_ACCOUNT_SID
+      #   sync: false
+      # - key: TWILIO_AUTH_TOKEN
+      #   sync: false
+      # Declarada mesmo com mock para aparecer na revisão deste arquivo em vez de
+      # virar um default escondido — o default do schema é 'false'.
+      - key: TWILIO_VALIDATE_WEBHOOK
+        value: 'true'
+      # Autoriza o seed de demonstração (usuários de senha 123456). Um clone deste
+      # blueprint para um hospital de verdade não vai ter esta variável.
+      - key: ALLOW_DEMO_SEED
+        value: 'true'
       # origem do front, para o CORS. Se o Render alterar a URL do serviço web
       # (nome já em uso), corrija esta variável no painel.
       - key: WEB_ORIGIN

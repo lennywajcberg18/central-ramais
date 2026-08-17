@@ -1,6 +1,7 @@
 import express, { NextFunction, Request, Response, Router } from 'express';
 import { twilioWebhookMiddleware } from '../providers/twilio';
 import { handleInbound } from '../services/webhook.service';
+import { mascararNumero } from '../utils/phone';
 
 const router = Router();
 
@@ -13,19 +14,37 @@ router.post(
   express.urlencoded({ extended: false }),
   twilioWebhookMiddleware(),
   async (req, res) => {
+    // Fora do try porque o catch precisa destes campos: sem eles no log, uma
+    // queda do banco engole a mensagem sem deixar nem como contar quantas
+    // sumiram — o Twilio já marcou como entregue e não reentrega.
+    const { From, To, Body, MessageSid, NumMedia } = req.body as Record<
+      string,
+      string | undefined
+    >;
     try {
-      const { From, To, Body, MessageSid } = req.body as Record<string, string | undefined>;
       if (From && To) {
         await handleInbound({
           from: From,
           to: To,
           body: Body ?? '',
           messageSid: MessageSid ?? '',
+          numMedia: Number(NumMedia ?? 0),
         });
       }
     } catch (err) {
       // O webhook SEMPRE responde 200 — 500 faz o Twilio reentregar em loop.
-      console.error('[webhook] erro interno processando inbound:', err);
+      // O log estruturado não recupera a mensagem, só deixa de escondê-la: com o
+      // MessageSid dá para reprocessar à mão pelo simulador ou por curl.
+      console.error(
+        JSON.stringify({
+          nivel: 'error',
+          evento: 'webhook_inbound_falhou',
+          messageSid: MessageSid ?? null,
+          to: To ? mascararNumero(To) : null,
+          from: From ? mascararNumero(From) : null,
+          erro: err instanceof Error ? err.message : String(err),
+        })
+      );
     }
     replyEmptyTwiml(res);
   }
