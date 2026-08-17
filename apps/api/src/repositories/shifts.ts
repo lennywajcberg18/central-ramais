@@ -58,6 +58,17 @@ export function findOpenSessionForUser(tenantId: string, userId: string) {
   });
 }
 
+// TODAS as sessões abertas da pessoa. Só a mais recente não basta quando a escala
+// muda: uma sessão órfã de antes ficaria com a hora de saída antiga, e o job, ao
+// fechar a certa, encontraria a órfã aberta e concluiria "o turno seguinte já
+// começou" — deixando de devolver as conversas dela para a fila.
+export function listOpenSessionsForUser(tenantId: string, userId: string) {
+  return prisma.shiftSession.findMany({
+    where: { tenantId, userId, endedAt: null },
+    orderBy: { startedAt: 'asc' },
+  });
+}
+
 export function createSession(tenantId: string, userId: string, endsAt: Date) {
   return prisma.shiftSession.create({ data: { tenantId, userId, endsAt } });
 }

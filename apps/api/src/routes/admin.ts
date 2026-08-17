@@ -15,7 +15,9 @@ import * as shifts from '../repositories/shifts';
 import * as users from '../repositories/users';
 import { closeConversation } from '../services/lifecycle.service';
 import { computeMetrics } from '../services/metrics.service';
-import { reevaluateShift } from '../services/shift.service';
+import { claimKey } from '../services/access.service';
+import { replaceSchedule } from '../services/shift.service';
+import { runSerialized } from '../utils/keyedQueue';
 import { buildPrefillText, generateEntryCode, generateSlug } from '../utils/ids';
 import { normalizeKeyword } from '../utils/text';
 
@@ -379,10 +381,10 @@ router.put('/admin/users/:id/shifts', async (req, res, next) => {
     if (!user) throw new NotFoundError();
     if (user.role !== 'agent') throw new BadRequestError('só atendentes têm escala de plantão');
 
-    await shifts.replaceForUser(tenantId, user.id, parsed.data.shifts);
-    // A escala nova pode ter tirado a pessoa do plantão de hoje ou mudado a
-    // hora de saída dela — o plantão em curso precisa acompanhar.
-    await reevaluateShift(tenantId, user.id);
+    // Substituir a escala e reavaliar o plantão em curso vão juntas: separadas,
+    // um login que começasse no meio criava a sessão já depois da reavaliação e
+    // com a escala antiga na mão.
+    await replaceSchedule(tenantId, user.id, parsed.data.shifts);
     res.json(await shifts.listForUser(tenantId, user.id));
   } catch (err) {
     next(err);
@@ -531,15 +533,22 @@ router.patch('/admin/contacts/:id', async (req, res, next) => {
         throw new BadRequestError('este link foi revogado: reatribuir cortaria o acesso do contato');
       }
       // A regra do link nominal (um número só) vale também pelo painel — dois
-      // contatos no mesmo link nominal desligam o alerta de vazamento.
+      // contatos no mesmo link nominal desligam o alerta de vazamento. Conferir e
+      // gravar entram na mesma fila do webhook: são os dois caminhos que disputam
+      // a posse do link, e separados os dois passavam pela conferência.
       if (link.kind === 'nominal') {
-        const holder = await externalContacts.findHolderOfLink(tenantId, link.id);
-        if (holder && holder.id !== contact.id) {
-          throw new BadRequestError('este link nominal já está vinculado a outro número');
-        }
+        await runSerialized(claimKey(tenantId, link.id), async () => {
+          const holder = await externalContacts.findHolderOfLink(tenantId, link.id);
+          if (holder && holder.id !== contact.id) {
+            throw new BadRequestError('este link nominal já está vinculado a outro número');
+          }
+          const result = await externalContacts.reassignLink(tenantId, contact.id, link.id);
+          if (result.count === 0) throw new NotFoundError();
+        });
+      } else {
+        const result = await externalContacts.reassignLink(tenantId, contact.id, link.id);
+        if (result.count === 0) throw new NotFoundError();
       }
-      const result = await externalContacts.reassignLink(tenantId, contact.id, link.id);
-      if (result.count === 0) throw new NotFoundError();
     }
 
     if (parsed.data.blocked !== undefined) {

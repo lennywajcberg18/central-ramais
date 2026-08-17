@@ -3,6 +3,7 @@ import * as conversations from '../repositories/conversations';
 import * as shifts from '../repositories/shifts';
 import * as tenants from '../repositories/tenants';
 import * as users from '../repositories/users';
+import { runSerialized } from '../utils/keyedQueue';
 import { describeNextWindow, localNow, shiftEndsAt } from '../utils/shiftClock';
 import { assignPendingForUser, tryAssign } from './routing.service';
 
@@ -42,33 +43,72 @@ async function coberturaAtual(tenantId: string, userId: string, at: Date): Promi
   };
 }
 
+// Escala e sessão de plantão da mesma pessoa são um par: quem lê um para
+// escrever o outro entra nesta fila. Sem ela, o login lia a escala velha e criava
+// a sessão DEPOIS que o `reevaluateShift` do admin já tinha desistido por não
+// achar sessão aberta — a pessoa entrava de plantão com uma escala que acabara de
+// deixar de existir, e nada reavaliava aquela sessão nunca mais.
+function shiftKey(tenantId: string, userId: string): string {
+  return `shift:${tenantId}:${userId}`;
+}
+
+// Substitui a escala e ajusta o plantão em curso numa operação só — as duas
+// coisas separadas é que abriam a janela.
+export function replaceSchedule(
+  tenantId: string,
+  userId: string,
+  entries: shifts.ShiftInput[]
+): Promise<void> {
+  return runSerialized(shiftKey(tenantId, userId), async () => {
+    await shifts.replaceForUser(tenantId, userId, entries);
+    await reevaluateShiftSemFila(tenantId, userId);
+  });
+}
+
 // Chamada depois que o admin troca a escala. Escala nova pode ter tirado a
 // pessoa do plantão (encerra) ou mudado a hora de saída (reajusta o fim).
-export async function reevaluateShift(tenantId: string, userId: string): Promise<void> {
-  const aberta = await shifts.findOpenSessionForUser(tenantId, userId);
-  if (!aberta) return;
+export function reevaluateShift(tenantId: string, userId: string): Promise<void> {
+  return runSerialized(shiftKey(tenantId, userId), () =>
+    reevaluateShiftSemFila(tenantId, userId)
+  );
+}
+
+// O corpo, já dentro da fila. Chamar direto de fora reabre a corrida.
+async function reevaluateShiftSemFila(tenantId: string, userId: string): Promise<void> {
+  // TODAS as sessões abertas, não a mais recente: uma órfã deixada por um login
+  // duplo de antes desta correção sobreviveria ao encurtamento de escala com a
+  // hora de saída antiga.
+  const abertas = await shifts.listOpenSessionsForUser(tenantId, userId);
+  if (abertas.length === 0) return;
 
   const { fim } = await coberturaAtual(tenantId, userId, new Date());
   if (!fim) {
     await endShift(tenantId, userId, 'admin');
     return;
   }
-  // O teto conta do início do plantão, não do momento em que a escala foi
-  // salva: ancorar em "agora" faria cada edição renovar as 16 horas, e o limite
-  // de duração deixaria de existir para quem tem escala contínua.
-  const novoFim = capShiftEnd(fim, aberta.startedAt);
-  if (novoFim.getTime() !== aberta.endsAt.getTime()) {
-    await shifts.updateSessionEnd(tenantId, aberta.id, novoFim);
+  for (const aberta of abertas) {
+    // O teto conta do início do plantão, não do momento em que a escala foi
+    // salva: ancorar em "agora" faria cada edição renovar as 16 horas, e o limite
+    // de duração deixaria de existir para quem tem escala contínua.
+    const novoFim = capShiftEnd(fim, aberta.startedAt);
+    if (novoFim.getTime() !== aberta.endsAt.getTime()) {
+      await shifts.updateSessionEnd(tenantId, aberta.id, novoFim);
+    }
   }
 }
 
 // Abre (ou reaproveita) o plantão do atendente. Reaproveitar importa: entrar
 // pelo celular e pelo computador é a mesma pessoa no mesmo plantão, e encerrar
 // num lugar tem que encerrar no outro.
-export async function openShiftForUser(
-  tenantId: string,
-  userId: string
-): Promise<OpenShiftResult> {
+export function openShiftForUser(tenantId: string, userId: string): Promise<OpenShiftResult> {
+  // Entrar pelo celular e pelo computador no mesmo instante — ou dar dois
+  // cliques no botão — eram dois logins lendo "não tem plantão aberto" e criando
+  // um cada. Duas sessões abertas fazem o job achar que o turno seguinte já
+  // começou e não devolver as conversas de quem saiu.
+  return runSerialized(shiftKey(tenantId, userId), () => openShiftSemFila(tenantId, userId));
+}
+
+async function openShiftSemFila(tenantId: string, userId: string): Promise<OpenShiftResult> {
   const agora = new Date();
 
   const aberta = await shifts.findOpenSessionForUser(tenantId, userId);

@@ -88,15 +88,25 @@ router.post('/agent/conversations/:id/messages', async (req, res, next) => {
       throw new BadRequestError('este contato está bloqueado; desbloqueie antes de responder');
     }
 
-    // agente respondendo conversa da fila assume o atendimento
+    // Agente respondendo conversa da fila assume o atendimento. Se dois abrirem
+    // a mesma conversa e responderem juntos, quem chega primeiro fica com ela —
+    // a mensagem do segundo vai embora do mesmo jeito, porque ele já digitou.
     if (conversation.status === 'open') {
       const agora = new Date();
-      await conversations.update(tenantId, conversation.id, {
-        status: 'assigned',
-        assignedUserId: userId,
-        assignedAt: agora,
-      });
-      await conversations.markFirstAssignedOnce(tenantId, conversation.id, agora);
+      const assumida = await conversations.assignTo(tenantId, conversation.id, userId, agora);
+      if (assumida.count > 0) {
+        await conversations.markFirstAssignedOnce(tenantId, conversation.id, agora);
+      }
+    }
+
+    // O job de inatividade pode ter encerrado a conversa entre a leitura lá em
+    // cima e este ponto: sem a trava, a resposta sairia para o WhatsApp DEPOIS do
+    // encerramento e o `first_reply_at` seria gravado depois do `closed_at` —
+    // atendimento fantasma nas métricas e uma mensagem do hospital sem ninguém
+    // do outro lado.
+    const viva = await conversations.touchIfActive(tenantId, conversation.id);
+    if (viva.count === 0) {
+      throw new BadRequestError('esta conversa foi encerrada enquanto você escrevia');
     }
 
     await sendConversationMessage(

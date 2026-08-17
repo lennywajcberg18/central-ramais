@@ -102,10 +102,21 @@ export async function setDepartment(
   conversation: Conversation,
   department: Department
 ): Promise<void> {
-  await conversations.update(ctx.tenantId, conversation.id, {
-    departmentId: department.id,
-    status: 'open',
-  });
+  // O job de inatividade não passa pela fila do contato: alguém que recebe o
+  // menu, larga o celular e responde "1" meia hora depois pode responder no
+  // mesmo instante da varredura. Sem o estado no WHERE, a escolha ressuscitava a
+  // conversa — ela ia para um atendente já com `closed_at` e
+  // `close_reason=timeout` gravados, e o externo recebia a pergunta de nota
+  // antes de qualquer atendimento.
+  const escolheu = await conversations.moveStatus(
+    ctx.tenantId,
+    conversation.id,
+    'awaiting_department',
+    { departmentId: department.id, status: 'open' }
+  );
+  // encerrada nesse meio tempo: a próxima mensagem dela abre conversa nova
+  if (escolheu.count === 0) return;
+
   await sendConversationMessage(
     ctx.tenantId,
     conversation.id,
@@ -149,7 +160,13 @@ export async function handleDepartmentChoice(
     await setDepartment(ctx, conversation, departments[0]);
     return;
   }
-  await conversations.update(ctx.tenantId, conversation.id, { menuRetries: retries });
+  const repetiu = await conversations.moveStatus(
+    ctx.tenantId,
+    conversation.id,
+    'awaiting_department',
+    { menuRetries: retries }
+  );
+  if (repetiu.count === 0) return;
   await sendMenu(ctx, conversation.id, departments);
 }
 
@@ -159,10 +176,9 @@ export async function closeConversation(
   conversationId: string,
   reason: CloseReason
 ): Promise<void> {
-  await conversations.update(tenantId, conversationId, {
-    status: 'closed',
-    closeReason: reason,
-    closedAt: new Date(),
-  });
+  // Só encerra o que ainda está vivo: sem a guarda, bloquear um contato no mesmo
+  // instante em que o job encerra por inatividade reescreveria o `close_reason`
+  // e o `closed_at` de uma conversa já fechada.
+  await conversations.closeIfActive(tenantId, conversationId, reason);
 }
 

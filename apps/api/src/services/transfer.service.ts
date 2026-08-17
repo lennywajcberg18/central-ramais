@@ -74,9 +74,22 @@ export async function transferConversation(
   // Volta para a fila do setor novo: quem estava atendendo não vai junto.
   // `firstAssignedAt` fica intacto — o externo esperou uma vez só, e é isso que
   // a métrica de espera mede.
-  const movida = await conversations.transferDepartment(tenantId, conversation.id, destino.id);
+  //
+  // O setor de origem vai no WHERE junto com o status: dois atendentes clicando
+  // "encaminhar" quase juntos liam o mesmo estado, os dois passavam nas
+  // validações e o externo recebia dois avisos contraditórios. Quem perde a
+  // corrida não escreve, não avisa e não reatribui — e vê na tela que o
+  // encaminhamento dele não valeu, em vez de achar que resolveu.
+  const movida = await conversations.transferDepartment(
+    tenantId,
+    conversation.id,
+    destino.id,
+    conversation.departmentId
+  );
   if (movida.count === 0) {
-    throw new BadRequestError('esta conversa foi encerrada enquanto você encaminhava');
+    throw new BadRequestError(
+      'esta conversa mudou de setor ou foi encerrada enquanto você encaminhava'
+    );
   }
 
   // O externo precisa saber que mudou de setor: do lado dele, alguém some da

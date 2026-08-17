@@ -73,11 +73,18 @@ export function releaseFromUser(
 }
 
 // Troca de setor com guarda: entre ler a conversa e escrever, ela pode ter sido
-// encerrada por inatividade ou pelo próprio externo. O status entra no WHERE e o
-// chamador confere o count — sem isso a transferência ressuscitaria a conversa.
-export function transferDepartment(tenantId: string, id: string, departmentId: string) {
+// encerrada por inatividade OU encaminhada por outro atendente. Status e setor de
+// ORIGEM entram no WHERE e o chamador confere o count. Sem a origem, dois
+// encaminhamentos simultâneos passam os dois e o externo recebe dois avisos
+// contraditórios ("encaminhado para Enfermagem" / "…para Recepção").
+export function transferDepartment(
+  tenantId: string,
+  id: string,
+  departmentId: string,
+  fromDepartmentId: string | null
+) {
   return prisma.conversation.updateMany({
-    where: { tenantId, id, status: { in: ['open', 'assigned'] } },
+    where: { tenantId, id, status: { in: ['open', 'assigned'] }, departmentId: fromDepartmentId },
     data: {
       departmentId,
       status: 'open',
@@ -85,6 +92,119 @@ export function transferDepartment(tenantId: string, id: string, departmentId: s
       assignedAt: null,
       menuRetries: 0,
     },
+  });
+}
+
+// Atribuição com guarda: a conversa continua na fila e sem dono no instante do
+// UPDATE. Dois caminhos podem atribuir a mesma conversa ao mesmo tempo — o
+// rodízio e o atendente que responde direto da fila pela tela.
+export function assignTo(tenantId: string, id: string, userId: string, at: Date) {
+  return prisma.conversation.updateMany({
+    where: { tenantId, id, status: 'open', assignedUserId: null },
+    data: { status: 'assigned', assignedUserId: userId, assignedAt: at },
+  });
+}
+
+// A mesma guarda, mais a outra ponta da corrida: quem o rodízio escolheu ainda
+// está de plantão e disponível NO INSTANTE do UPDATE.
+//
+// Ler os elegíveis e gravar em consultas separadas entrega a conversa a quem
+// encerrou o plantão no meio do caminho — e aí ela some das duas listas, porque
+// quem saiu não a enxerga mais e a fila do setor só mostra `open`. O EXISTS
+// espelha `users.availableAgentsForDepartment`; SQL cru porque `updateMany` do
+// Prisma não filtra por relação de forma atômica.
+export async function assignToIfOnShift(
+  tenantId: string,
+  id: string,
+  userId: string,
+  at: Date
+): Promise<{ count: number }> {
+  const count = await prisma.$executeRaw`
+    UPDATE conversations
+       SET status = 'assigned', assigned_user_id = ${userId}, assigned_at = ${at}
+     WHERE id = ${id}
+       AND tenant_id = ${tenantId}
+       AND status = 'open'
+       AND assigned_user_id IS NULL
+       AND EXISTS (
+             SELECT 1
+               FROM users u
+               JOIN shift_sessions s
+                 ON s.user_id = u.id
+                AND s.tenant_id = u.tenant_id
+                AND s.ended_at IS NULL
+                AND s.ends_at > ${at}
+              WHERE u.id = ${userId}
+                AND u.tenant_id = ${tenantId}
+                AND u.active
+                AND u.availability = 'available'
+           )`;
+  return { count };
+}
+
+// Encerrar é uma corrida com tudo o mais: entre ler a conversa e gravar o
+// fechamento ela pode ter sido encaminhada para outro setor, assumida por alguém
+// ou encerrada por outro caminho. O estado LIDO entra no WHERE e o chamador
+// confere o count — sem isso o job de inatividade mata a conversa que o atendente
+// acabou de encaminhar, e o externo recebe a pergunta de nota duas vezes.
+export interface ConversationSnapshot {
+  status: ConversationStatus;
+  departmentId: string | null;
+  assignedUserId: string | null;
+}
+
+export function closeIfUnchanged(
+  tenantId: string,
+  id: string,
+  visto: ConversationSnapshot,
+  status: ConversationStatus,
+  reason: CloseReason
+) {
+  return prisma.conversation.updateMany({
+    where: {
+      tenantId,
+      id,
+      status: visto.status,
+      departmentId: visto.departmentId,
+      assignedUserId: visto.assignedUserId,
+    },
+    data: { status, closeReason: reason, closedAt: new Date() },
+  });
+}
+
+// Transição de estado do fluxo do externo com o estado esperado no WHERE. O job
+// de inatividade não passa pela fila do contato, então toda escrita do menu pode
+// cruzar com um encerramento: sem a guarda a escolha do setor RESSUSCITA a
+// conversa e deixa `closed_at` e `close_reason=timeout` gravados numa conversa
+// viva — e "timestamps são o produto".
+export function moveStatus(
+  tenantId: string,
+  id: string,
+  de: ConversationStatus,
+  data: Prisma.ConversationUncheckedUpdateManyInput
+) {
+  return prisma.conversation.updateMany({
+    where: { tenantId, id, status: de },
+    data,
+  });
+}
+
+// Encerramento cru, só do que ainda está vivo — evita reescrever `close_reason` e
+// `closed_at` de uma conversa que outro caminho já fechou.
+export function closeIfActive(tenantId: string, id: string, reason: CloseReason) {
+  return prisma.conversation.updateMany({
+    where: { tenantId, id, status: { in: ACTIVE_STATUSES } },
+    data: { status: 'closed', closeReason: reason, closedAt: new Date() },
+  });
+}
+
+// Mesma ideia, do lado de quem responde: confirma que a conversa continua viva no
+// instante do envio. A marca no `lastMessageAt` é o que torna a checagem atômica —
+// um SELECT antes de enviar não impediria o job de encerrar no meio.
+export function touchIfActive(tenantId: string, id: string) {
+  return prisma.conversation.updateMany({
+    where: { tenantId, id, status: { in: ACTIVE_STATUSES } },
+    data: { lastMessageAt: new Date() },
   });
 }
 

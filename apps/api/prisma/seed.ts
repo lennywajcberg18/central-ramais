@@ -144,6 +144,9 @@ export async function seed() {
   await prisma.externalContact.deleteMany();
   await prisma.entryLinkDepartment.deleteMany();
   await prisma.entryLink.deleteMany();
+  // conversa entre ramais: aponta para usuário e setor, então sai antes deles
+  await prisma.internalMessage.deleteMany();
+  await prisma.internalThread.deleteMany();
   await prisma.shiftSession.deleteMany();
   await prisma.shift.deleteMany();
   await prisma.userDepartment.deleteMany();

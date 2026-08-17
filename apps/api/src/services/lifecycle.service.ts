@@ -34,11 +34,25 @@ export async function closeWithCsat(
   const tenant = await tenants.findById(tenantId);
   const askCsat = tenant?.csatEnabled === true;
 
-  await conversations.update(tenantId, conversationId, {
-    status: askCsat ? 'awaiting_feedback' : 'closed',
-    closeReason: reason,
-    closedAt: new Date(),
-  });
+  // O `if` acima é atalho barato, não garantia: quem garante é o count. Três
+  // caminhos encerram a mesma conversa (job de inatividade, botão do atendente,
+  // "SIM" no MENU) e nenhum passa pela fila dos outros. Sem o estado lido no
+  // WHERE, os dois passavam pelo mesmo `if` e os dois gravavam — o externo
+  // recebia a pergunta de nota duas vezes e o `closeReason` virava sorteio.
+  // O setor e o dono também entram: se a conversa foi encaminhada nesse meio
+  // tempo, encerrá-la a mataria dentro do setor que acabou de recebê-la.
+  const encerrada = await conversations.closeIfUnchanged(
+    tenantId,
+    conversationId,
+    {
+      status: conversation.status,
+      departmentId: conversation.departmentId,
+      assignedUserId: conversation.assignedUserId,
+    },
+    askCsat ? 'awaiting_feedback' : 'closed',
+    reason
+  );
+  if (encerrada.count === 0) return;
 
   if (askCsat) {
     await sendConversationMessage(
@@ -78,10 +92,16 @@ export async function handleMenuKeyword(
     ? await departments.findById(ctx.tenantId, conversation.departmentId)
     : null;
 
-  await conversations.update(ctx.tenantId, conversation.id, {
+  // Guarda de estado em toda transição do fluxo do externo: o job de inatividade
+  // não passa pela fila do contato e pode ter encerrado a conversa entre a
+  // leitura e esta linha. Sem a guarda, a pergunta seria feita numa conversa
+  // morta — e o "SIM" da pessoa cairia no vazio.
+  const perguntou = await conversations.moveStatus(ctx.tenantId, conversation.id, 'assigned', {
     status: 'awaiting_menu_confirm',
     menuRetries: 0,
   });
+  if (perguntou.count === 0) return;
+
   await sendConversationMessage(
     ctx.tenantId,
     conversation.id,
@@ -112,7 +132,14 @@ export async function handleMenuConfirm(
 
   // resposta inválida: repete uma vez; na segunda, assume NÃO
   if (conversation.menuRetries === 0) {
-    await conversations.update(ctx.tenantId, conversation.id, { menuRetries: 1 });
+    const repetiu = await conversations.moveStatus(
+      ctx.tenantId,
+      conversation.id,
+      'awaiting_menu_confirm',
+      { menuRetries: 1 }
+    );
+    if (repetiu.count === 0) return;
+
     const department = conversation.departmentId
       ? await departments.findById(ctx.tenantId, conversation.departmentId)
       : null;
@@ -130,10 +157,15 @@ export async function handleMenuConfirm(
 }
 
 async function resumeAssigned(ctx: InboundContext, conversation: Conversation): Promise<void> {
-  await conversations.update(ctx.tenantId, conversation.id, {
-    status: 'assigned',
-    menuRetries: 0,
-  });
+  const voltou = await conversations.moveStatus(
+    ctx.tenantId,
+    conversation.id,
+    'awaiting_menu_confirm',
+    { status: 'assigned', menuRetries: 0 }
+  );
+  // encerrada pelo job enquanto a pessoa respondia: não ressuscita
+  if (voltou.count === 0) return;
+
   // a resposta também fica visível para o agente no app
   await sendConversationMessage(
     ctx.tenantId,
@@ -185,7 +217,9 @@ export async function handleFeedbackMessage(
   if (!conversation.feedback.comment && withinWindow) {
     await persistInbound(conversation.id, ctx.tenantId, body, messageSid);
     await feedbackRepo.setComment(conversation.id, body);
-    await conversations.update(ctx.tenantId, conversation.id, { status: 'closed' });
+    await conversations.moveStatus(ctx.tenantId, conversation.id, 'awaiting_feedback', {
+      status: 'closed',
+    });
     return true;
   }
 
@@ -194,7 +228,9 @@ export async function handleFeedbackMessage(
 
 // O chamador decidiu que a mensagem não era feedback: fecha o ciclo sem nota.
 export async function finalizeFeedback(tenantId: string, conversationId: string): Promise<void> {
-  await conversations.update(tenantId, conversationId, { status: 'closed' });
+  await conversations.moveStatus(tenantId, conversationId, 'awaiting_feedback', {
+    status: 'closed',
+  });
 }
 
 export { closeConversation };

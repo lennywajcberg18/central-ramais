@@ -124,7 +124,20 @@ async function dispatchInbound(
     await finalizeFeedback(tenantId, awaitingFeedback.id);
   }
 
-  await startConversation(ctx, msg.body, msg.messageSid);
+  const nova = await startConversation(ctx, msg.body, msg.messageSid);
+
+  // O admin pode bloquear o contato entre o `resolveAccess` e a criação da
+  // conversa: o PATCH já procurou conversa ativa, não achou nenhuma, e ninguém
+  // mais encerraria esta — ela ficaria na fila do setor para sempre, porque o
+  // job de inatividade não varre `open` e nenhuma mensagem futura desse número é
+  // processada. A releitura fecha a janela: se o bloqueio venceu a corrida, ele
+  // necessariamente aconteceu antes desta consulta.
+  if (nova) {
+    const atual = await externalContacts.findById(tenantId, contact.id);
+    if (atual?.blocked) {
+      await closeConversation(tenantId, nova.id, 'access_revoked');
+    }
+  }
 }
 
 async function handleActiveConversation(
