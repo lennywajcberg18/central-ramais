@@ -45,8 +45,10 @@ export function updateSessionEnd(tenantId: string, id: string, endsAt: Date) {
   });
 }
 
-export function findOpenSessionById(tenantId: string, id: string) {
-  return prisma.shiftSession.findFirst({ where: { id, tenantId, endedAt: null } });
+// O userId entra no filtro junto com o id: a sessão é a credencial do plantão, e
+// credencial se confere pelo dono, não só pela existência.
+export function findOpenSessionById(tenantId: string, id: string, userId: string) {
+  return prisma.shiftSession.findFirst({ where: { id, tenantId, userId, endedAt: null } });
 }
 
 export function findOpenSessionForUser(tenantId: string, userId: string) {

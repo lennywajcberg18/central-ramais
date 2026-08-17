@@ -51,7 +51,11 @@ export async function requireAuth(req: Request, _res: Response, next: NextFuncti
         next(new UnauthorizedError('plantão encerrado'));
         return;
       }
-      const session = await shifts.findOpenSessionById(payload.tenantId, payload.shiftSessionId);
+      const session = await shifts.findOpenSessionById(
+        payload.tenantId,
+        payload.shiftSessionId,
+        payload.userId
+      );
       if (!session || session.endsAt <= new Date()) {
         next(new UnauthorizedError('plantão encerrado'));
         return;
