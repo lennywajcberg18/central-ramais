@@ -72,15 +72,22 @@ async function main() {
   // O preparo já é destrutivo, então entra no try junto com as rodadas: falhar
   // ao abrir o plantão depois de reescrever a escala não pode deixar o estrago.
   try {
-    await prisma.shift.deleteMany({ where: { tenantId, userId: diego.id } });
+    // Escala integral para os DOIS, não só para o diego. O carlos tem plantão
+    // diurno no seed, então rodar este check depois das 18h fazia `openShiftForUser`
+    // recusar a sessão dele, as duas conversas caírem no diego e o script acusar
+    // empate — um teste que passa de manhã e falha à noite é pior que um teste que
+    // falha sempre, porque ninguém confia nele depois.
+    await prisma.shift.deleteMany({ where: { tenantId, userId: { in: envolvidos } } });
     await prisma.shift.createMany({
-      data: Array.from({ length: 7 }, (_, weekday) => ({
-        tenantId,
-        userId: diego.id,
-        weekday,
-        startMinute: 0,
-        endMinute: 1440,
-      })),
+      data: envolvidos.flatMap((userId) =>
+        Array.from({ length: 7 }, (_, weekday) => ({
+          tenantId,
+          userId,
+          weekday,
+          startMinute: 0,
+          endMinute: 1440,
+        }))
+      ),
     });
     await prisma.shiftSession.deleteMany({ where: { tenantId, userId: { in: envolvidos } } });
     await openShiftForUser(tenantId, carlos.id);
