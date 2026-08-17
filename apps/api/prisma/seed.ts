@@ -14,13 +14,38 @@ interface SeedLink {
   departmentNames: string[];
 }
 
+// Faixa de plantão em minutos desde 00:00, repetida nos sete dias da semana.
+// end menor que start é plantão que vira o dia (noturno).
+interface SeedShift {
+  startMinute: number;
+  endMinute: number;
+}
+
+interface SeedAgent {
+  name: string;
+  email: string;
+  departmentNames: string[];
+  shift: SeedShift;
+}
+
 interface SeedTenant {
   name: string;
   phoneNumber: string;
   departments: string[];
   links: SeedLink[];
   admin: { name: string; email: string };
-  agents: { name: string; email: string; departmentNames: string[] }[];
+  agents: SeedAgent[];
+}
+
+const DIURNO: SeedShift = { startMinute: 7 * 60, endMinute: 19 * 60 };
+const NOTURNO: SeedShift = { startMinute: 19 * 60, endMinute: 7 * 60 };
+// Cobertura integral: mantém a demonstração possível a qualquer hora do dia.
+const INTEGRAL: SeedShift = { startMinute: 0, endMinute: 1440 };
+const COMERCIAL: SeedShift = { startMinute: 8 * 60, endMinute: 18 * 60 };
+
+function formatMinute(minute: number): string {
+  const m = minute % 1440;
+  return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 }
 
 const TENANTS: SeedTenant[] = [
@@ -58,9 +83,26 @@ const TENANTS: SeedTenant[] = [
     ],
     admin: { name: 'Admin Vida', email: 'admin@hospitalvida.test' },
     agents: [
-      { name: 'Carlos Andrade', email: 'agente1@hospitalvida.test', departmentNames: ['Cardiologia', 'Recepção'] },
-      { name: 'Beatriz Lima', email: 'agente2@hospitalvida.test', departmentNames: ['Enfermagem', 'Recepção'] },
-      { name: 'Diego Souza', email: 'agente3@hospitalvida.test', departmentNames: ['Fisioterapia', 'Faturamento', 'Cardiologia'] },
+      {
+        name: 'Carlos Andrade',
+        email: 'agente1@hospitalvida.test',
+        departmentNames: ['Cardiologia', 'Recepção'],
+        shift: DIURNO,
+      },
+      {
+        // integral de propósito: é o acesso usado nas demonstrações, e um
+        // plantão diurno deixaria o roteiro impossível de rodar à noite
+        name: 'Beatriz Lima',
+        email: 'agente2@hospitalvida.test',
+        departmentNames: ['Enfermagem', 'Recepção'],
+        shift: INTEGRAL,
+      },
+      {
+        name: 'Diego Souza',
+        email: 'agente3@hospitalvida.test',
+        departmentNames: ['Fisioterapia', 'Faturamento', 'Cardiologia'],
+        shift: NOTURNO,
+      },
     ],
   },
   {
@@ -77,8 +119,18 @@ const TENANTS: SeedTenant[] = [
     ],
     admin: { name: 'Admin Reabilitar', email: 'admin@reabilitar.test' },
     agents: [
-      { name: 'Elisa Prado', email: 'agente1@reabilitar.test', departmentNames: ['Fisioterapia', 'Recepção'] },
-      { name: 'Fábio Nunes', email: 'agente2@reabilitar.test', departmentNames: ['Fonoaudiologia', 'Recepção'] },
+      {
+        name: 'Elisa Prado',
+        email: 'agente1@reabilitar.test',
+        departmentNames: ['Fisioterapia', 'Recepção'],
+        shift: COMERCIAL,
+      },
+      {
+        name: 'Fábio Nunes',
+        email: 'agente2@reabilitar.test',
+        departmentNames: ['Fonoaudiologia', 'Recepção'],
+        shift: INTEGRAL,
+      },
     ],
   },
 ];
@@ -92,6 +144,8 @@ export async function seed() {
   await prisma.externalContact.deleteMany();
   await prisma.entryLinkDepartment.deleteMany();
   await prisma.entryLink.deleteMany();
+  await prisma.shiftSession.deleteMany();
+  await prisma.shift.deleteMany();
   await prisma.userDepartment.deleteMany();
   await prisma.user.deleteMany();
   await prisma.department.deleteMany();
@@ -156,13 +210,31 @@ export async function seed() {
         if (!departmentId) throw new Error(`setor não encontrado no seed: ${deptName}`);
         await prisma.userDepartment.create({ data: { userId: agent.id, departmentId } });
       }
+
+      // A mesma faixa nos sete dias: escala real varia, mas aqui o que precisa
+      // ficar demonstrável é o efeito do plantão, não a montagem da escala.
+      await prisma.shift.createMany({
+        data: Array.from({ length: 7 }, (_, weekday) => ({
+          tenantId: tenant.id,
+          userId: agent.id,
+          weekday,
+          startMinute: agentSeed.shift.startMinute,
+          endMinute: agentSeed.shift.endMinute,
+        })),
+      });
     }
 
     lines.push('', `=== ${seed.name} ===`);
     lines.push(`WhatsApp: ${seed.phoneNumber}`);
     lines.push(`Admin:  ${seed.admin.email} / ${PASSWORD}`);
     for (const a of seed.agents) {
-      lines.push(`Agente: ${a.email} / ${PASSWORD} (${a.departmentNames.join(', ')})`);
+      const faixa =
+        a.shift.startMinute === 0 && a.shift.endMinute === 1440
+          ? 'plantão integral'
+          : `plantão ${formatMinute(a.shift.startMinute)}–${formatMinute(a.shift.endMinute)}`;
+      lines.push(
+        `Agente: ${a.email} / ${PASSWORD} (${a.departmentNames.join(', ')}) — ${faixa}`
+      );
     }
 
     for (const linkSeed of seed.links) {

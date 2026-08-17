@@ -310,6 +310,216 @@ function ConfirmDeactivate({
   );
 }
 
+interface ShiftRow {
+  id: string;
+  userId: string;
+  weekday: number;
+  startMinute: number;
+  endMinute: number;
+}
+
+interface OpenShift {
+  id: string;
+  endsAt: string;
+  user: { id: string; name: string };
+}
+
+const DIAS = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
+
+interface DiaEscala {
+  ativo: boolean;
+  inicio: string;
+  fim: string;
+}
+
+function minutoParaHora(minute: number): string {
+  const m = minute % 1440;
+  return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+}
+
+// "00:00" no fim significa meia-noite do dia seguinte: sem isto, um plantão que
+// termina à meia-noite viraria uma faixa de duração zero.
+function horaParaMinuto(valor: string, ehFim: boolean): number {
+  const [h, m] = valor.split(':').map((n) => parseInt(n, 10));
+  const total = (h || 0) * 60 + (m || 0);
+  return ehFim && total === 0 ? 1440 : total;
+}
+
+function escalaVazia(): DiaEscala[] {
+  return DIAS.map(() => ({ ativo: false, inicio: '07:00', fim: '19:00' }));
+}
+
+// O editor mostra uma faixa por dia. Se a escala tiver duas no mesmo dia, salvar
+// aqui apagaria a outra em silêncio — por isso o dia extra é sinalizado.
+function escalaDeShifts(shifts: ShiftRow[]): { dias: DiaEscala[]; diasComVariasFaixas: number[] } {
+  const dias = escalaVazia();
+  const vistos = new Set<number>();
+  const diasComVariasFaixas: number[] = [];
+
+  for (const shift of shifts) {
+    if (shift.weekday < 0 || shift.weekday > 6) continue;
+    if (vistos.has(shift.weekday)) {
+      if (!diasComVariasFaixas.includes(shift.weekday)) diasComVariasFaixas.push(shift.weekday);
+      continue;
+    }
+    vistos.add(shift.weekday);
+    dias[shift.weekday] = {
+      ativo: true,
+      inicio: minutoParaHora(shift.startMinute),
+      fim: minutoParaHora(shift.endMinute),
+    };
+  }
+  return { dias, diasComVariasFaixas };
+}
+
+function ShiftEditor({
+  user,
+  dias,
+  diasComVariasFaixas,
+  onChange,
+  onSave,
+  onCancel,
+  saving,
+  loading,
+  carregou,
+  error,
+}: {
+  user: UserRow;
+  dias: DiaEscala[];
+  diasComVariasFaixas: number[];
+  onChange: (weekday: number, dia: DiaEscala) => void;
+  onSave: () => void;
+  onCancel: () => void;
+  saving: boolean;
+  loading: boolean;
+  carregou: boolean;
+  error: string | null;
+}) {
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape' && !saving) onCancel();
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onCancel, saving]);
+
+  function aplicarEmTodos() {
+    const base = dias.find((d) => d.ativo) ?? dias[0];
+    for (let i = 0; i < DIAS.length; i++) {
+      onChange(i, { ativo: true, inicio: base.inicio, fim: base.fim });
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-ink-900/40 p-4 sm:items-center">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="titulo-escala"
+        className="max-h-[90dvh] w-full max-w-lg overflow-y-auto rounded-2xl border border-ink-200/70 bg-white p-6 shadow-[var(--shadow-lift)]"
+      >
+        <h2 id="titulo-escala" className="text-lg font-semibold text-ink-900">
+          Escala de plantão · {user.name}
+        </h2>
+        <p className="mt-2 text-sm leading-relaxed text-ink-600">
+          Fora do horário marcado, esta pessoa não entra no sistema. Quando o plantão acaba, o acesso
+          é encerrado e as conversas dela voltam para a fila do setor.
+        </p>
+
+        {loading ? (
+          <div className="mt-5 space-y-2">
+            <Skeleton className="h-10" />
+            <Skeleton className="h-10" />
+            <Skeleton className="h-10" />
+          </div>
+        ) : (
+          <>
+            <div className="mt-5 space-y-1.5">
+              {dias.map((dia, weekday) => (
+                <div
+                  key={DIAS[weekday]}
+                  className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-ink-100 px-3 py-2"
+                >
+                  <label className="flex min-w-32 items-center gap-2 text-sm text-ink-800">
+                    <input
+                      type="checkbox"
+                      checked={dia.ativo}
+                      onChange={(e) => onChange(weekday, { ...dia, ativo: e.target.checked })}
+                      className="h-4 w-4 rounded border-ink-300 text-brand-600 focus:ring-brand-500"
+                    />
+                    {DIAS[weekday]}
+                  </label>
+                  <div className="flex items-center gap-2 text-sm text-ink-500">
+                    <input
+                      type="time"
+                      value={dia.inicio}
+                      disabled={!dia.ativo}
+                      onChange={(e) => onChange(weekday, { ...dia, inicio: e.target.value })}
+                      aria-label={`Início do plantão de ${DIAS[weekday]}`}
+                      className={`${inputClass} mt-0 w-28 disabled:opacity-40`}
+                    />
+                    <span>até</span>
+                    <input
+                      type="time"
+                      value={dia.fim}
+                      disabled={!dia.ativo}
+                      onChange={(e) => onChange(weekday, { ...dia, fim: e.target.value })}
+                      aria-label={`Fim do plantão de ${DIAS[weekday]}`}
+                      className={`${inputClass} mt-0 w-28 disabled:opacity-40`}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <p className="mt-3 text-xs leading-relaxed text-ink-500">
+              Fim menor que o início é plantão que vira o dia — 19:00 às 07:00 cobre a noite inteira.
+            </p>
+
+            {diasComVariasFaixas.length > 0 && (
+              <p
+                role="alert"
+                className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800"
+              >
+                Esta pessoa tem mais de um plantão no mesmo dia (
+                {diasComVariasFaixas.map((d) => DIAS[d]).join(', ')}). Esta tela mostra um por dia —
+                salvar aqui mantém só o horário que está aparecendo.
+              </p>
+            )}
+
+            <button
+              type="button"
+              onClick={aplicarEmTodos}
+              className="mt-2 text-sm font-medium text-brand-700 underline underline-offset-4 hover:text-brand-800"
+            >
+              Repetir o mesmo horário nos sete dias
+            </button>
+          </>
+        )}
+
+        {error && <div className="mt-4">{<ErrorNote>{error}</ErrorNote>}</div>}
+
+        <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <Button variant="secondary" onClick={onCancel} disabled={saving}>
+            Cancelar
+          </Button>
+          <Button
+            onClick={onSave}
+            disabled={saving || loading || !carregou}
+            title={
+              carregou
+                ? undefined
+                : 'A escala atual não carregou. Feche e abra de novo — salvar agora apagaria o que está cadastrado.'
+            }
+          >
+            {saving ? 'Salvando…' : 'Salvar escala'}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function AgentesPage() {
   const [users, setUsers] = useState<UserRow[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
@@ -331,15 +541,26 @@ export default function AgentesPage() {
 
   const [notice, setNotice] = useState<string | null>(null);
 
+  const [shiftUser, setShiftUser] = useState<UserRow | null>(null);
+  const [shiftDias, setShiftDias] = useState<DiaEscala[]>(escalaVazia());
+  const [shiftDiasExtras, setShiftDiasExtras] = useState<number[]>([]);
+  const [shiftCarregou, setShiftCarregou] = useState(false);
+  const [shiftLoading, setShiftLoading] = useState(false);
+  const [savingShift, setSavingShift] = useState(false);
+  const [shiftError, setShiftError] = useState<string | null>(null);
+  const [emPlantao, setEmPlantao] = useState<OpenShift[]>([]);
+
   const load = useCallback(async () => {
     setLoadError(null);
     try {
-      const [u, d] = await Promise.all([
+      const [u, d, plantoes] = await Promise.all([
         api<UserRow[]>('/admin/users'),
         api<Department[]>('/admin/departments'),
+        api<OpenShift[]>('/admin/shift-sessions'),
       ]);
       setUsers(u);
       setDepartments(d.filter((x) => x.active));
+      setEmPlantao(plantoes);
     } catch (err) {
       setLoadError(errorText(err, 'Não foi possível carregar a equipe agora.'));
     } finally {
@@ -436,6 +657,76 @@ export default function AgentesPage() {
   function startEditing(u: UserRow) {
     setEditError(null);
     setEditing({ id: u.id, deptIds: u.departmentIds });
+  }
+
+  async function startEditingShift(u: UserRow) {
+    setShiftError(null);
+    setShiftUser(u);
+    setShiftDias(escalaVazia());
+    setShiftDiasExtras([]);
+    setShiftCarregou(false);
+    setShiftLoading(true);
+    try {
+      const { dias, diasComVariasFaixas } = escalaDeShifts(
+        await api<ShiftRow[]>(`/admin/users/${u.id}/shifts`)
+      );
+      setShiftDias(dias);
+      setShiftDiasExtras(diasComVariasFaixas);
+      // só depois de carregar de verdade é que salvar é seguro: um editor vazio
+      // por causa de erro de rede substituiria a escala inteira por nada
+      setShiftCarregou(true);
+    } catch (err) {
+      setShiftError(errorText(err, 'Não foi possível carregar a escala agora.'));
+    } finally {
+      setShiftLoading(false);
+    }
+  }
+
+  function changeShiftDia(weekday: number, dia: DiaEscala) {
+    setShiftDias((prev) => prev.map((d, i) => (i === weekday ? dia : d)));
+  }
+
+  async function saveShift() {
+    if (!shiftUser || !shiftCarregou) return;
+    setShiftError(null);
+
+    if (shiftDias.some((d) => d.ativo && (!d.inicio || !d.fim))) {
+      setShiftError('Preencha o horário de início e de fim dos dias marcados.');
+      return;
+    }
+
+    const shifts = shiftDias
+      .map((dia, weekday) => ({ dia, weekday }))
+      .filter(({ dia }) => dia.ativo)
+      .map(({ dia, weekday }) => ({
+        weekday,
+        startMinute: horaParaMinuto(dia.inicio, false),
+        endMinute: horaParaMinuto(dia.fim, true),
+      }));
+
+    if (shifts.some((s) => s.startMinute === s.endMinute)) {
+      setShiftError('Um plantão não pode começar e terminar no mesmo horário.');
+      return;
+    }
+
+    setSavingShift(true);
+    try {
+      await api(`/admin/users/${shiftUser.id}/shifts`, {
+        method: 'PUT',
+        body: JSON.stringify({ shifts }),
+      });
+      setNotice(
+        shifts.length === 0
+          ? `${shiftUser.name} ficou sem escala e não vai conseguir entrar.`
+          : `Escala de ${shiftUser.name} atualizada.`
+      );
+      setShiftUser(null);
+      await load();
+    } catch (err) {
+      setShiftError(errorText(err, 'Não foi possível salvar a escala agora.'));
+    } finally {
+      setSavingShift(false);
+    }
   }
 
   const semSetores = departments.length === 0;
@@ -539,6 +830,35 @@ export default function AgentesPage() {
       </Panel>
 
       <Panel title="Pessoas com acesso" hint={loading ? undefined : contagem}>
+        {!loading && !loadError && (
+          <div className="border-b border-ink-100 bg-ink-50/50 px-5 py-3">
+            <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
+              De plantão agora
+            </p>
+            {emPlantao.length === 0 ? (
+              <p className="mt-1 text-sm text-ink-600">
+                Ninguém. Conversas novas ficam esperando na fila do setor até alguém entrar.
+              </p>
+            ) : (
+              <ul className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1">
+                {emPlantao.map((p) => (
+                  <li key={p.id} className="flex items-center gap-1.5 text-sm text-ink-700">
+                    <Dot tone="success" />
+                    {p.user.name}
+                    <span className="text-ink-400">
+                      até{' '}
+                      {new Date(p.endsAt).toLocaleTimeString('pt-BR', {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+
         {toggleError && !confirming && (
           <div className="px-5 pt-4">
             <ErrorNote>{toggleError}</ErrorNote>
@@ -647,14 +967,24 @@ export default function AgentesPage() {
                           {!editRow && (
                             <div className="flex justify-end gap-2">
                               {u.role === 'agent' && (
-                                <Button
-                                  type="button"
-                                  variant="secondary"
-                                  className={ACAO_DE_LINHA}
-                                  onClick={() => startEditing(u)}
-                                >
-                                  Setores
-                                </Button>
+                                <>
+                                  <Button
+                                    type="button"
+                                    variant="secondary"
+                                    className={ACAO_DE_LINHA}
+                                    onClick={() => startEditing(u)}
+                                  >
+                                    Setores
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    variant="secondary"
+                                    className={ACAO_DE_LINHA}
+                                    onClick={() => startEditingShift(u)}
+                                  >
+                                    Plantão
+                                  </Button>
+                                </>
                               )}
                               {u.active ? (
                                 <Button
@@ -717,14 +1047,24 @@ export default function AgentesPage() {
                         <DeptBadges user={u} />
                         <div className="flex flex-wrap gap-2">
                           {u.role === 'agent' && (
-                            <Button
-                              type="button"
-                              variant="secondary"
-                              className={ACAO_DE_LINHA}
-                              onClick={() => startEditing(u)}
-                            >
-                              Setores
-                            </Button>
+                            <>
+                              <Button
+                                type="button"
+                                variant="secondary"
+                                className={ACAO_DE_LINHA}
+                                onClick={() => startEditing(u)}
+                              >
+                                Setores
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="secondary"
+                                className={ACAO_DE_LINHA}
+                                onClick={() => startEditingShift(u)}
+                              >
+                                Plantão
+                              </Button>
+                            </>
                           )}
                           {u.active ? (
                             <Button
@@ -759,6 +1099,25 @@ export default function AgentesPage() {
           </>
         )}
       </Panel>
+
+      {shiftUser && (
+        <ShiftEditor
+          user={shiftUser}
+          dias={shiftDias}
+          diasComVariasFaixas={shiftDiasExtras}
+          onChange={changeShiftDia}
+          onSave={saveShift}
+          onCancel={() => {
+            if (savingShift) return;
+            setShiftUser(null);
+            setShiftError(null);
+          }}
+          saving={savingShift}
+          loading={shiftLoading}
+          carregou={shiftCarregou}
+          error={shiftError}
+        />
+      )}
 
       {confirming && (
         <ConfirmDeactivate

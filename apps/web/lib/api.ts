@@ -33,7 +33,9 @@ export function clearSession(): void {
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
-    message: string
+    message: string,
+    // Recusa acionável traz contexto no corpo (ex.: quando é o próximo plantão).
+    public readonly details?: Record<string, unknown>
   ) {
     super(message);
   }
@@ -56,14 +58,20 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const naTelaDeLogin = typeof window !== 'undefined' && window.location.pathname === '/login';
 
   if (res.status === 401 && typeof window !== 'undefined' && !naTelaDeLogin) {
+    // Fim de plantão derruba a sessão no meio do uso. Sem dizer o motivo na tela
+    // de login, a pessoa acha que o sistema quebrou e tenta entrar de novo.
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    const plantaoEncerrado = body?.error === 'plantão encerrado';
     clearSession();
-    window.location.href = '/login';
-    throw new ApiError(401, 'sessão expirada');
+    window.location.href = plantaoEncerrado ? '/login?motivo=plantao' : '/login';
+    throw new ApiError(401, body?.error ?? 'sessão expirada');
   }
 
   if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as { error?: string } | null;
-    throw new ApiError(res.status, body?.error ?? `erro ${res.status}`);
+    const body = (await res.json().catch(() => null)) as
+      | ({ error?: string } & Record<string, unknown>)
+      | null;
+    throw new ApiError(res.status, body?.error ?? `erro ${res.status}`, body ?? undefined);
   }
 
   return (await res.json()) as T;

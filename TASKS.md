@@ -224,6 +224,54 @@ decisão de `PROJETO.md`.
 
 ---
 
+## SPRINT 2 — Pedidos da reunião de 14/08
+
+O ramal móvel do hospital some e o WhatsApp da pessoa toma o lugar dele. Isso
+levanta o problema que dominou a reunião: **o médico não pode continuar
+recebendo chamado do hospital depois que o plantão acaba.**
+
+### T4.1 — Sessão que acaba com o plantão · `feat/plantao`
+- [x] `shifts` (escala semanal em minutos, no fuso do tenant) e `shift_sessions`
+      (o plantão acontecendo)
+- [x] Login do atendente abre — ou reaproveita — a sessão de plantão; o JWT
+      carrega `shiftSessionId` e expira junto com o turno
+- [x] `requireAuth` recusa atendente sem plantão aberto: fim de plantão derruba
+      o acesso **agora**, não quando o token vencer
+- [x] Botão "Encerrar plantão" no app de quem atende
+- [x] Quem sai devolve as conversas para a fila do ramal, que são reoferecidas a
+      quem continua de plantão — o "um sai e o outro entra"
+- [x] Job de 60s encerra plantão vencido sem depender de ninguém clicar
+- [x] Roteamento só distribui para quem está de plantão
+- [x] Admin edita a escala em `/admin/agentes` e vê quem está de plantão agora
+- [x] Fora da escala, o login explica o motivo e diz quando é o próximo plantão
+- **Testar:** `agente3@hospitalvida.test` (plantão 19:00–07:00) tentando entrar
+      de dia → recusado com o horário do próximo plantão. Com `agente1` dentro
+      do plantão, mandar uma mensagem pelo MEDX escolhendo Cardiologia, encerrar
+      o plantão dele e conferir que a conversa volta para a fila:
+  ```bash
+  curl -X POST http://localhost:3001/agent/shift/end -H "Authorization: Bearer <TOKEN>"
+  ```
+
+### T4.2 — Transferir atendimento entre ramais · `feat/transferencia`
+- [ ] A Recepção passa a conversa do externo para a Cardiologia com o histórico
+      junto; a transferência vira mensagem `sender_type=system` e o externo é
+      avisado do setor novo
+- [ ] A conversa continua sendo **uma só** — separar quebraria as métricas
+
+### T4.3 — Contato entre ramais · `feat/ramal-interno`
+- [ ] Conversa interna entre dois setores, sem externo envolvido
+- [ ] Nova tela no app de quem atende
+
+### Backlog da reunião — ainda sem task
+- Número máximo de atendentes de plantão por setor ("no CT são três; chegou o
+  quarto, um tem que sair")
+- Nome e celular de quem é de fora no primeiro acesso — **contradiz a regra 7
+  do CLAUDE.md** (zero fricção); decidir antes de implementar
+- Mensagem de voz; ligação depois
+- Log de agilidade: quem chamou, quem atendeu e **quem não atendeu**
+
+---
+
 ## Comandos de teste
 
 Substitua os códigos pelos que o seed imprimir.

@@ -47,9 +47,26 @@ export interface AuthUserDTO {
   availability: Availability;
 }
 
+// Plantão: a escala cadastrada e a sessão que está acontecendo.
+export type ShiftEndReason = 'manual' | 'schedule' | 'admin';
+
+export interface ShiftDTO {
+  id: string;
+  userId: string;
+  weekday: number; // 0=domingo … 6=sábado
+  startMinute: number; // minutos desde 00:00, no fuso do hospital
+  endMinute: number; // menor que startMinute = plantão que vira o dia
+}
+
+export interface ShiftSessionDTO {
+  startedAt: string;
+  endsAt: string;
+}
+
 export interface LoginResponseDTO {
   token: string;
   user: AuthUserDTO;
+  shift: ShiftSessionDTO | null;
 }
 
 export interface MessageDTO {
