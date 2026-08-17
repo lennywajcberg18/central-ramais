@@ -141,7 +141,18 @@ async function openShiftSemFila(tenantId: string, userId: string): Promise<OpenS
   // ramal. Só no plantão novo: quem recarregou a página estando "ausente"
   // continua ausente.
   await users.setAvailability(tenantId, userId, 'available');
-  await assignPendingForUser(tenantId, userId);
+
+  // A distribuição NÃO segura a resposta do login. Ela percorre a fila inteira
+  // do setor uma conversa por vez, e na virada de turno (ou na volta de uma
+  // queda) a fila é justamente o que está grande: com 100 conversas paradas o
+  // POST /auth/login levava ~6,6 s. Nada no resultado do login depende dela — o
+  // que não for distribuído continua `open`, à vista de todo mundo na fila do
+  // setor, e o próximo evento de rodízio pega. Solto e com `catch` próprio,
+  // também, para uma atribuição que falhe não rejeitar o login DEPOIS de a
+  // sessão de plantão já existir e a disponibilidade já ser `available`.
+  void assignPendingForUser(tenantId, userId).catch((err) => {
+    console.error(`[shift] falha ao distribuir a fila para o usuário ${userId}:`, err);
+  });
 
   return { ok: true, session, becameAvailable: true };
 }
@@ -171,7 +182,13 @@ async function releaseUserWork(
 // saindo. E uma falha aqui não pode derrubar o encerramento: a conversa já está
 // `open` na fila do setor, à vista de todo mundo, e o próximo colega disponível a
 // puxa — perder a reoferta atrasa, perder o encerramento deixa órfã.
-async function reofferConversations(tenantId: string, ids: string[]): Promise<void> {
+//
+// Exportada porque sair do plantão não é a única porta que larga conversas: o
+// admin desativando um atendente e o admin tirando ele de um setor soltam as
+// mesmas conversas e hoje não reoferecem nenhuma — elas ficam paradas em `open`
+// (o job de inatividade não varre `open`) mesmo com um colega de plantão no
+// mesmo setor. As rotas de admin passam a chamar isto, depois do commit.
+export async function reofferConversations(tenantId: string, ids: string[]): Promise<void> {
   for (const id of ids) {
     try {
       await tryAssign(tenantId, id);
@@ -207,6 +224,14 @@ export async function endShift(
     // A disponibilidade vai PRIMEIRO: é o UPDATE nesta linha que o rodízio espera
     // no `FOR UPDATE` do `assignToIfOnShift`. Soltar antes de travar a linha
     // deixaria a atribuição concorrente entrar depois da varredura.
+    //
+    // E é também a regra de ordem de travas de todo caminho que encerra plantão:
+    // a linha do usuário é travada ANTES de qualquer escrita em `shift_sessions`
+    // ou `conversations`. `expireDueShifts` (com um `FOR UPDATE` explícito, porque
+    // ele não pode escrever antes de saber o `count`), `users.deactivate` e
+    // `users.update({active:false})` fazem o mesmo. Inverter em qualquer um deles
+    // recria o deadlock 40P01 que derrubava o fim de plantão e o login na virada
+    // de turno.
     await users.setAvailability(tenantId, userId, 'offline', tx);
     const f = await shifts.closeSessionsOfUser(tenantId, userId, reason, tx);
     const s = await releaseUserWork(tenantId, userId, tx);
@@ -236,19 +261,38 @@ export async function expireDueShifts(at: Date = new Date()): Promise<number> {
         const atual = await shifts.findOpenSessionForUser(tenant.id, session.userId);
         const temPlantaoVivo = atual !== null && atual.endsAt > at;
 
-        // Soltar ANTES de gravar `endedAt`, pela mesma razão do `endShift` — só
-        // que aqui o estrago era permanente: com o fim já gravado, a sessão sai do
-        // `listExpiredSessions` (que filtra `endedAt: null`), a varredura NUNCA
-        // retenta e as conversas ficam órfãs para sempre, com uma linha de log
-        // como único sinal. Falhando antes, a mesma sessão volta na varredura do
-        // minuto seguinte, e o release é idempotente.
-        // Mesma transação do `endShift`, e pela mesma razão. Fecha primeiro para
-        // ter o `count`: a trava `endsAt <= at` do repositório é o que impede o job
-        // de encerrar um plantão que o admin esticou no meio do caminho, e nesse
-        // caso nada pode ser solto. Se o release falhar, a transação inteira volta
-        // atrás e a sessão continua vencida e aberta — a varredura do minuto
-        // seguinte tenta de novo, em vez de deixar as conversas órfãs para sempre.
+        // Fechar e soltar na MESMA transação, como o `endShift`. Aqui o fechamento
+        // vem primeiro porque é dele que sai o `count`: a trava `endsAt <= at` do
+        // repositório é o que impede o job de encerrar um plantão que o admin
+        // esticou no meio do caminho, e nesse caso nada pode ser solto. Fora de
+        // transação essa ordem seria o pior dos mundos — com o `endedAt` já
+        // gravado, a sessão sai do `listExpiredSessions` (que filtra
+        // `endedAt: null`), a varredura NUNCA retenta e as conversas ficam órfãs
+        // para sempre, com uma linha de log como único sinal. Dentro dela, um erro
+        // no release desfaz o fechamento junto: a sessão continua vencida e aberta
+        // e a varredura do minuto seguinte tenta de novo.
         const { fechada, soltas } = await prisma.$transaction(async (tx) => {
+          // A LINHA DO ATENDENTE PRIMEIRO, e sem escrever nela. Este `FOR UPDATE`
+          // não guarda nenhuma regra de negócio: ele só põe esta transação na
+          // mesma ordem de travas do `endShift` (users → shift_sessions →
+          // conversations), que é a ordem que `users.deactivate` e
+          // `users.update({active:false})` também seguem. Sem ele, esta varredura
+          // trancava shift_sessions antes de users e o outro lado o contrário —
+          // ciclo ABBA: o job varrendo a sessão vencida no mesmo instante em que a
+          // pessoa clica em "meu plantão acabou", faz login com sessão vencida ou
+          // o admin a desativa derrubava uma das duas com 40P01. A vítima era
+          // quase sempre o atendente (500 no fim de plantão ou no login) e o
+          // instante era o pior possível: a troca de turno.
+          //
+          // Travar sem escrever, e não adiantar o `setAvailability` para cá,
+          // porque quem decide se há algo a soltar é o `count` do
+          // `closeExpiredSession` logo abaixo: gravar `offline` antes marcaria
+          // fora do ar justamente quem o admin acabou de esticar.
+          await tx.$queryRaw`
+            SELECT 1 FROM users
+             WHERE id = ${session.userId} AND tenant_id = ${tenant.id}
+               FOR UPDATE`;
+
           const f = await shifts.closeExpiredSession(tenant.id, session.id, at, 'schedule', tx);
           if (f.count === 0 || temPlantaoVivo) {
             return { fechada: f, soltas: { count: 0, ids: [] as string[] } };

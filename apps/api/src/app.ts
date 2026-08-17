@@ -16,7 +16,13 @@ export function createApp() {
 
   // Atrás do proxy do Render a requisição chega como http; sem isto a validação
   // de assinatura do Twilio remonta a URL errada e rejeita webhook legítimo.
-  app.set('trust proxy', true);
+  // É `1` e não `true` porque o Render é um salto só: com `true` o Express
+  // acredita no X-Forwarded-For inteiro e resolve `req.ip` como a entrada mais à
+  // ESQUERDA, que é dado do cliente — o limite de tentativas de login virava
+  // decorativo, bastava incrementar um número no header. Com 1 salto, `req.ip` é
+  // o endereço que o proxy anexou. O X-Forwarded-Proto continua sendo lido (o
+  // salto direto segue confiável), então a URL que a Twilio assina não muda.
+  app.set('trust proxy', 1);
 
   app.use(cors({ origin: config.WEB_ORIGIN }));
 

@@ -44,7 +44,7 @@ export async function startConversation(
   }
 
   const single = departments.length === 1;
-  const conversation = await conversations.create(ctx.tenantId, {
+  const { conversation, criada } = await conversations.createOrGetActive(ctx.tenantId, {
     whatsappNumberId: ctx.whatsappNumber.id,
     externalContactId: ctx.contact.id,
     entryLinkId: ctx.link.id,
@@ -55,6 +55,22 @@ export async function startConversation(
   });
 
   await persistInbound(conversation.id, ctx.tenantId, body, messageSid);
+
+  // Perdemos a corrida de criação: a conversa é a que o outro processo abriu, e
+  // ele já mandou o menu (ou o aviso de fila) e já chamou o rodízio. Seguir daqui
+  // repetiria os dois — o índice único fecha a linha duplicada, não a mensagem
+  // duplicada. Esta mensagem é uma inbound numa conversa viva e é assim que ela
+  // tem que ser tratada: no menu, ela é a escolha do setor (ou mais uma tentativa
+  // inválida). Nos outros estados ela fica só registrada, como o `open` do
+  // `handleActiveConversation` — inclusive um "MENU" que caia exatamente nesta
+  // janela de milissegundos, porque tratá-lo aqui fecharia um ciclo de import
+  // com o lifecycle.
+  if (!criada) {
+    if (conversation.status === 'awaiting_department') {
+      await handleDepartmentChoice(ctx, conversation, body, departments);
+    }
+    return conversation;
+  }
 
   if (single) {
     // lista com 1 setor pula o menu

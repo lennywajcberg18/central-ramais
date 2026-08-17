@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useDialogoModal } from '@/components/ConfirmDialog';
 import {
   Badge,
   Button,
@@ -78,6 +79,9 @@ export default function AdminConversasPage() {
   // troca de filtro no meio de uma, a resposta antiga chega depois e repinta a
   // lista com o filtro errado.
   const requisicao = useRef(0);
+  // mesmo mecanismo da lista, agora para o detalhe: sem ele, o gestor que abriu
+  // a linha errada e fechou vê a gaveta reabrir sozinha quando a resposta chega
+  const requisicaoDetalhe = useRef(0);
   const gaveta = useRef<HTMLElement>(null);
   const origemDoFoco = useRef<HTMLElement | null>(null);
 
@@ -107,30 +111,38 @@ export default function AdminConversasPage() {
 
   const gavetaAberta = aberta !== null || carregandoDetalhe;
 
+  // Fechar tem que valer também durante o carregamento: enquanto a promise não
+  // volta, `aberta` ainda é null e limpar só ela não desiste de nada — a gaveta
+  // reabria segundos depois com o histórico que o gestor já tinha dispensado.
+  const fechar = useCallback(() => {
+    requisicaoDetalhe.current += 1;
+    setAberta(null);
+    setCarregandoDetalhe(false);
+  }, []);
+
+  // A gaveta se anuncia como `aria-modal`, então precisa se comportar como uma:
+  // sem trava de Tab, dois Tabs levavam o foco para a navegação lateral, atrás
+  // da máscara, enquanto o leitor de tela dizia que o resto da página não existe.
+  useDialogoModal(gavetaAberta, gaveta, fechar, origemDoFoco);
+
   useEffect(() => {
     if (!gavetaAberta) return;
     gaveta.current?.focus();
-    function aoTeclar(evento: KeyboardEvent) {
-      if (evento.key === 'Escape') setAberta(null);
-    }
-    document.addEventListener('keydown', aoTeclar);
-    return () => {
-      document.removeEventListener('keydown', aoTeclar);
-      // Sem devolver o foco à linha que abriu a gaveta, quem navega por teclado
-      // volta para o topo da página e perde o lugar na lista.
-      origemDoFoco.current?.focus();
-    };
   }, [gavetaAberta]);
 
   async function abrir(id: string, origem: HTMLElement) {
+    const daVez = ++requisicaoDetalhe.current;
     origemDoFoco.current = origem;
     setCarregandoDetalhe(true);
     try {
-      setAberta(await api<Detail>(`/admin/conversations/${id}/messages`));
+      const detalhe = await api<Detail>(`/admin/conversations/${id}/messages`);
+      if (daVez !== requisicaoDetalhe.current) return;
+      setAberta(detalhe);
     } catch (err) {
+      if (daVez !== requisicaoDetalhe.current) return;
       setErro(err instanceof Error ? err.message : 'não foi possível abrir a conversa');
     } finally {
-      setCarregandoDetalhe(false);
+      if (daVez === requisicaoDetalhe.current) setCarregandoDetalhe(false);
     }
   }
 
@@ -241,7 +253,7 @@ export default function AdminConversasPage() {
       {gavetaAberta && (
         <div
           className="fixed inset-0 z-30 flex justify-end bg-ink-900/30"
-          onClick={() => setAberta(null)}
+          onClick={fechar}
         >
           <aside
             ref={gaveta}
@@ -270,7 +282,7 @@ export default function AdminConversasPage() {
                         {aberta.conversation.departmentName ?? 'sem setor'}
                       </p>
                     </div>
-                    <Button variant="ghost" onClick={() => setAberta(null)}>
+                    <Button variant="ghost" onClick={fechar}>
                       Fechar
                     </Button>
                   </div>

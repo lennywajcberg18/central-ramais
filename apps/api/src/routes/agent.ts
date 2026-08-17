@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { BadRequestError, NotFoundError } from '../errors';
+import { BadRequestError, ConflictError, NotFoundError } from '../errors';
 import { requireAuth } from '../middleware/auth';
 import * as conversations from '../repositories/conversations';
 import * as departments from '../repositories/departments';
@@ -134,7 +134,15 @@ router.post('/agent/conversations/:id/close', async (req, res, next) => {
     if (!conversation) throw new NotFoundError();
     if (conversation.status === 'closed') throw new BadRequestError('conversa já encerrada');
 
-    await closeFromAgent(tenantId, conversation.id);
+    // O `if` acima é atalho: entre a leitura e o encerramento a conversa pode ter
+    // sido encaminhada para outro setor ou já ter ido para `awaiting_feedback`
+    // por outro caminho. Sem conferir o booleano, a resposta era 200 {ok:true} e o
+    // atendente fechava a tela achando que encerrou — com a conversa viva no setor
+    // novo. Mesmo tratamento que o encaminhamento já dá a quem perde a corrida.
+    const encerrou = await closeFromAgent(tenantId, conversation.id);
+    if (!encerrou) {
+      throw new ConflictError('esta conversa mudou de setor ou já havia sido encerrada');
+    }
     res.json({ ok: true });
   } catch (err) {
     next(err);

@@ -7,16 +7,24 @@
 //
 //   npm run check:corridas -w api
 //
-// Cuidado: cria contatos e links de teste no banco local. Os cenários 7 a 9
+// Cuidado: cria contatos e links de teste no banco local. Os cenários 7 a 10
 // mexem na escala, na disponibilidade e nos plantões dos atendentes, e devolvem
 // tudo ao estado anterior no fim — inclusive quando o script estoura no meio.
+// O cenário 10 roda a varredura de plantão de verdade, que é por tenant nenhum:
+// ela encerra as sessões vencidas de TODOS os hospitais do banco — exatamente o
+// que o job do servidor já faz a cada 60 s.
 // Não rode contra o banco de produção.
 import '../src/config';
 import { prisma } from '../src/prisma';
 import { closeWithCsat } from '../src/services/lifecycle.service';
 import { transferConversation } from '../src/services/transfer.service';
 import { handleInbound } from '../src/services/webhook.service';
-import { endShift, openShiftForUser, replaceSchedule } from '../src/services/shift.service';
+import {
+  endShift,
+  expireDueShifts,
+  openShiftForUser,
+  replaceSchedule,
+} from '../src/services/shift.service';
 import { tryAssign } from '../src/services/routing.service';
 import { closeConversation } from '../src/services/conversation.service';
 import * as externalContacts from '../src/repositories/externalContacts';
@@ -557,6 +565,75 @@ async function main() {
       await limpar(conversa.id, contato.id);
     }
     registrar('rodízio x fim de plantão (conversa presa)', falhas, RODADAS);
+
+    // -------------------------------------------------------------- 10
+    console.log('10) job de plantão varrendo a sessão vencida no mesmo instante do "encerrar plantão"');
+    console.log('   (as duas transações trancavam users e shift_sessions em ordens opostas: deadlock 40P01)');
+    falhas = 0;
+
+    // O deadlock não estoura nos dois lados igual: o `expireDueShifts` engole o
+    // erro por sessão e só loga, enquanto o `endShift` propaga (é o 500 que o
+    // atendente vê). Sem espionar o log, metade das vítimas passaria batido.
+    const errOriginal = console.error;
+    const ehDeadlock = (v: unknown) =>
+      `${(v as { code?: string })?.code ?? ''} ${String(v)}`.match(/40P01|deadlock/i) !== null;
+    let deadlocksNoJob = 0;
+    console.error = (...args: unknown[]) => {
+      if (args.some(ehDeadlock)) deadlocksNoJob++;
+      else errOriginal(...args);
+    };
+
+    try {
+      for (let r = 1; r <= RODADAS; r++) {
+        const antesDoJob = deadlocksNoJob;
+        await prisma.shiftSession.deleteMany({ where: { tenantId, userId: carlos.id } });
+        await prisma.user.updateMany({
+          where: { tenantId, id: carlos.id },
+          data: { availability: 'available' },
+        });
+        // sessão já vencida: é o que o job varre, e é o que o login também fecha
+        await prisma.shiftSession.create({
+          data: { tenantId, userId: carlos.id, endsAt: new Date(Date.now() - 60_000) },
+        });
+        const { conversa, contato } = await conversaEm('assigned', `9010${r}00`);
+
+        // O job entra primeiro porque ele lê bastante antes de abrir a transação;
+        // o respiro crescente do outro lado é o que faz as duas transações se
+        // cruzarem de verdade (a janela medida ficou entre 4 ms e 10 ms).
+        const [, fim] = await Promise.all([
+          expireDueShifts(new Date()),
+          new Promise<void>((ok) => setTimeout(ok, 4 + r))
+            .then(() => endShift(tenantId, carlos.id, 'manual'))
+            .then(
+              () => null as unknown,
+              (e: unknown) => e
+            ),
+        ]);
+
+        const deadlockNoAtendente = fim !== null && ehDeadlock(fim);
+        const deadlockNoJob = deadlocksNoJob > antesDoJob;
+        const abertas = await prisma.shiftSession.count({
+          where: { tenantId, userId: carlos.id, endedAt: null },
+        });
+        const depois = await prisma.conversation.findFirstOrThrow({
+          where: { tenantId, id: conversa.id },
+        });
+        // presa = seguiu com dono sem plantão aberto, que é o estrago que o
+        // deadlock deixa quando ele derruba justamente o lado que solta.
+        const presa = depois.assignedUserId !== null && abertas === 0;
+        if (deadlockNoAtendente || deadlockNoJob || abertas > 0 || presa) falhas++;
+        console.log(
+          `  rodada ${r}: deadlock atendente=${deadlockNoAtendente ? 'SIM' : 'não'}` +
+            ` deadlock job=${deadlockNoJob ? 'SIM' : 'não'} plantões abertos=${abertas}` +
+            ` dono=${depois.assignedUserId ? 'Carlos' : '(fila)'}` +
+            `${deadlockNoAtendente || deadlockNoJob ? '  <-- 40P01' : presa ? '  <-- PRESA' : ''}`
+        );
+        await limpar(conversa.id, contato.id);
+      }
+    } finally {
+      console.error = errOriginal;
+    }
+    registrar('fim de plantão x varredura do job (deadlock 40P01)', falhas, RODADAS);
   } finally {
     // No finally e não no fim do bloco: um cenário que estoure no meio deixa a
     // escala apagada do mesmo jeito, e aí ninguém desconfia do script.

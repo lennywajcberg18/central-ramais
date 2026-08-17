@@ -1,4 +1,4 @@
-import { CloseReason, ConversationStatus, Prisma } from '@prisma/client';
+import { CloseReason, Conversation, ConversationStatus, Prisma } from '@prisma/client';
 import { prisma } from '../prisma';
 
 // Estados que bloqueiam abrir outra conversa (awaiting_feedback NÃO bloqueia)
@@ -33,25 +33,48 @@ export interface CreateConversationInput {
   departmentId?: string;
 }
 
+export interface CreateConversationResult {
+  conversation: Conversation;
+  // false = perdemos a corrida e esta é a conversa que o outro processo criou.
+  // Quem chamou PRECISA olhar: o índice único impede a segunda LINHA, não a
+  // segunda MENSAGEM. Seguir o fluxo de abertura em cima da conversa alheia
+  // manda o menu (ou o "você será atendido por X") pela segunda vez e chama o
+  // rodízio de novo — que é exatamente o que o índice existe para evitar.
+  criada: boolean;
+}
+
 // "Uma conversa aberta por contato" agora é do banco, não da memória: o índice
 // único parcial `conversations_uma_ativa_por_contato` cobre os ACTIVE_STATUSES.
-// O keyedQueue serializa dentro de um processo só — com dois, as duas mensagens
-// seguidas do mesmo número leem "não há conversa ativa" e as duas criam.
+// O keyedQueue serializa dentro de um processo só — com dois (janela de deploy,
+// instância velha drenando), as duas mensagens seguidas do mesmo número leem
+// "não há conversa ativa" e as duas criam.
 // Perder essa corrida não é erro: quem chegou depois recebe a conversa que o
-// primeiro criou e o fluxo continua nela, sem segundo menu nem linha órfã.
-export async function create(tenantId: string, input: CreateConversationInput) {
+// primeiro criou, sem linha órfã, e trata a mensagem como o que ela é — uma
+// inbound numa conversa viva, não uma abertura.
+export async function createOrGetActive(
+  tenantId: string,
+  input: CreateConversationInput
+): Promise<CreateConversationResult> {
   try {
-    return await prisma.conversation.create({
+    const conversation = await prisma.conversation.create({
       data: { tenantId, ...input },
     });
+    return { conversation, criada: true };
   } catch (err) {
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
       const jaAberta = await findActiveByContact(tenantId, input.externalContactId);
       // Sem conversa ativa o P2002 veio de outra constraint — não é esta corrida.
-      if (jaAberta) return jaAberta;
+      if (jaAberta) return { conversation: jaAberta, criada: false };
     }
     throw err;
   }
+}
+
+// Forma antiga, que joga fora o `criada`. Só o `reopenMenu` do lifecycle ainda
+// usa — e por isso ele continua mandando um segundo menu quando perde a corrida.
+// Migrar aquele caminho para `createOrGetActive` apaga esta função.
+export async function create(tenantId: string, input: CreateConversationInput) {
+  return (await createOrGetActive(tenantId, input)).conversation;
 }
 
 export function findById(tenantId: string, id: string) {
@@ -121,17 +144,25 @@ export function assignTo(tenantId: string, id: string, userId: string, at: Date)
 }
 
 // A mesma guarda, mais a outra ponta da corrida: quem o rodízio escolheu ainda
-// está de plantão e disponível NO INSTANTE do UPDATE.
+// está de plantão, disponível E neste setor NO INSTANTE do UPDATE.
 //
 // Ler os elegíveis e gravar em consultas separadas entrega a conversa a quem
 // encerrou o plantão no meio do caminho — e aí ela some das duas listas, porque
 // quem saiu não a enxerga mais e a fila do setor só mostra `open`. O EXISTS
-// espelha `users.availableAgentsForDepartment`; SQL cru porque `updateMany` do
-// Prisma não filtra por relação de forma atômica.
+// repete condição por condição o WHERE de `users.availableAgentsForDepartment`,
+// inclusive `role` e a pertinência ao setor: quem sai do ramal enquanto o rodízio
+// escolhe não pode receber a conversa dele, e isso é falha de autorização, não
+// detalhe — o admin salvando só os setores de alguém não escreve na linha de
+// `users` e por isso nem o `FOR UPDATE` abaixo o segura. SQL cru porque
+// `updateMany` do Prisma não filtra por relação de forma atômica.
+//
+// `user_departments` não tem coluna de tenant: ela entra pelo `u.tenant_id` do
+// JOIN, que é o que amarra o vínculo ao hospital certo.
 export async function assignToIfOnShift(
   tenantId: string,
   id: string,
   userId: string,
+  departmentId: string,
   at: Date
 ): Promise<{ count: number }> {
   // A transação existe para disputar a LINHA DO ATENDENTE com quem está saindo de
@@ -159,6 +190,9 @@ export async function assignToIfOnShift(
          AND EXISTS (
                SELECT 1
                  FROM users u
+                 JOIN user_departments ud
+                   ON ud.user_id = u.id
+                  AND ud.department_id = ${departmentId}
                  JOIN shift_sessions s
                    ON s.user_id = u.id
                   AND s.tenant_id = u.tenant_id
@@ -167,6 +201,7 @@ export async function assignToIfOnShift(
                 WHERE u.id = ${userId}
                   AND u.tenant_id = ${tenantId}
                   AND u.active
+                  AND u.role = 'agent'
                   AND u.availability = 'available'
              )`;
     return { count };

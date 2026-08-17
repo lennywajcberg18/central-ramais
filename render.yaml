@@ -19,7 +19,9 @@ services:
       npx prisma generate --schema apps/api/prisma/schema.prisma &&
       npm run build -w api
     # migrate deploy aplica as migrations; o seed só roda com ALLOW_DEMO_SEED=true
-    # e o banco vazio, e derruba o deploy se falhar — API sem tenant é inútil.
+    # (que este arquivo não publica) e o banco sem usuário. Erro de leitura no start
+    # não impede a API de subir; só a falha do seed em si derruba o deploy, porque
+    # aí o banco fica sem tenant e sem admin — API assim é inútil.
     startCommand: >-
       npx prisma migrate deploy --schema apps/api/prisma/schema.prisma &&
       npx tsx apps/api/scripts/seed-if-empty.ts &&
@@ -46,18 +48,25 @@ services:
       # origem, e o único campo que resolve o tenant (`To`) é público.
       # SID e token ficam comentados porque são segredo: preencha no painel do
       # Render, nunca neste arquivo, que é versionado num repositório público.
+      # A validação da assinatura vem no mesmo bloco, e não solta: ligada com o
+      # provider mock não existe token com que validar, e o middleware do SDK
+      # responde sozinho 400 (sem o header X-Twilio-Signature) ou 500 (com ele),
+      # sem passar pelo nosso handler — 500 é justamente o que faz o Twilio
+      # reentregar em loop. Ligue as três juntas ou nenhuma.
       # - key: TWILIO_ACCOUNT_SID
       #   sync: false
       # - key: TWILIO_AUTH_TOKEN
       #   sync: false
-      # Declarada mesmo com mock para aparecer na revisão deste arquivo em vez de
-      # virar um default escondido — o default do schema é 'false'.
-      - key: TWILIO_VALIDATE_WEBHOOK
-        value: 'true'
-      # Autoriza o seed de demonstração (usuários de senha 123456). Um clone deste
-      # blueprint para um hospital de verdade não vai ter esta variável.
-      - key: ALLOW_DEMO_SEED
-        value: 'true'
+      # - key: TWILIO_VALIDATE_WEBHOOK
+      #   value: 'true'
+      # Seed de demonstração, comentado de propósito: com ele ligado e o banco sem
+      # usuários, o primeiro start cria admin@hospitalvida.test e
+      # admin@reabilitar.test com senha 123456, expostos na internet. Publicar o
+      # valor aqui faria todo clone deste blueprint nascer assim. Para montar uma
+      # instância de demonstração, adicione ALLOW_DEMO_SEED=true no painel do Render
+      # e reinicie o serviço.
+      # - key: ALLOW_DEMO_SEED
+      #   value: 'true'
       # origem do front, para o CORS. Se o Render alterar a URL do serviço web
       # (nome já em uso), corrija esta variável no painel.
       - key: WEB_ORIGIN

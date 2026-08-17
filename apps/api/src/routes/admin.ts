@@ -14,7 +14,11 @@ import * as externalContacts from '../repositories/externalContacts';
 import * as shifts from '../repositories/shifts';
 import * as tenants from '../repositories/tenants';
 import * as users from '../repositories/users';
-import { closeConversation } from '../services/lifecycle.service';
+import {
+  closeActiveInDepartment,
+  closeActiveOutsideLinkScope,
+  closeConversation,
+} from '../services/lifecycle.service';
 import { computeMetrics } from '../services/metrics.service';
 import { replaceSchedule } from '../services/shift.service';
 import { buildPrefillText, generateEntryCode, generateSlug } from '../utils/ids';
@@ -163,13 +167,21 @@ router.patch('/admin/departments/:id', async (req, res, next) => {
     if (willBeActive && (parsed.data.name !== undefined || parsed.data.active === true)) {
       await assertDepartmentNameFree(tenantId, parsed.data.name ?? current.name, current.id);
     }
-    if (current.active && parsed.data.active === false) {
+    const desativando = current.active && parsed.data.active === false;
+    if (desativando) {
       await assertDepartmentDeactivatable(tenantId, current.id);
     }
 
     const result = await departments.update(tenantId, current.id, parsed.data);
     if (result.count === 0) throw new NotFoundError();
-    res.json({ ok: true });
+
+    // Depois do UPDATE, nunca antes: enquanto o setor estava ativo ele ainda
+    // aparecia em `listDepartmentsForLink` e nenhuma conversa estaria fora do
+    // escopo do link.
+    const closedConversations = desativando
+      ? await closeActiveInDepartment(tenantId, current.id)
+      : 0;
+    res.json({ ok: true, closedConversations });
   } catch (err) {
     next(err);
   }
@@ -185,7 +197,12 @@ router.delete('/admin/departments/:id', async (req, res, next) => {
 
     const result = await departments.update(tenantId, current.id, { active: false });
     if (result.count === 0) throw new NotFoundError();
-    res.json({ ok: true });
+
+    // mesma porta do PATCH: setor que sai do ar leva junto o atendimento em curso
+    const closedConversations = current.active
+      ? await closeActiveInDepartment(tenantId, current.id)
+      : 0;
+    res.json({ ok: true, closedConversations });
   } catch (err) {
     next(err);
   }
@@ -570,6 +587,10 @@ router.patch('/admin/contacts/:id', async (req, res, next) => {
     const contact = await externalContacts.findById(tenantId, req.params.id);
     if (!contact) throw new NotFoundError();
 
+    // Reatribuir troca o escopo do contato AGORA; se a conversa em andamento
+    // ficou num setor que o link novo não permite, ela é encerrada.
+    let closedConversation = false;
+
     if (parsed.data.entryLinkId) {
       // o link de destino tem que ser do MESMO tenant
       const link = await entryLinks.findById(tenantId, parsed.data.entryLinkId);
@@ -595,6 +616,13 @@ router.patch('/admin/contacts/:id', async (req, res, next) => {
         const result = await externalContacts.reassignLink(tenantId, contact.id, link.id);
         if (result.count === 0) throw new NotFoundError();
       }
+
+      // A troca de link tem que alcançar a conversa VIVA, como o bloqueio e a
+      // revogação já alcançam. Sem isto, o externo continuava conversando dentro
+      // do setor antigo — que o link novo não autoriza —, o atendente daquele
+      // setor seguia respondendo pelo WhatsApp do hospital, e a cada fim de
+      // plantão o rodízio devolvia a conversa para a fila do mesmo setor.
+      closedConversation = await closeActiveOutsideLinkScope(tenantId, contact.id, link.id);
     }
 
     if (parsed.data.blocked !== undefined) {
@@ -606,11 +634,14 @@ router.patch('/admin/contacts/:id', async (req, res, next) => {
         // continua conseguindo responder um número que não pode mais escrever.
         // Sem CSAT: não faz sentido pedir nota a quem acabou de ser bloqueado.
         const active = await conversations.findActiveByContact(tenantId, contact.id);
-        if (active) await closeConversation(tenantId, active.id, 'access_revoked');
+        if (active) {
+          await closeConversation(tenantId, active.id, 'access_revoked');
+          closedConversation = true;
+        }
       }
     }
 
-    res.json({ ok: true });
+    res.json({ ok: true, closedConversation });
   } catch (err) {
     next(err);
   }

@@ -5,7 +5,7 @@ import jwt from 'jsonwebtoken';
 import { z } from 'zod';
 import { config } from '../config';
 import { ForbiddenError, UnauthorizedError } from '../errors';
-import { loginRateLimit } from '../middleware/rateLimit';
+import { loginRateLimit, perdoarLogin } from '../middleware/rateLimit';
 import * as users from '../repositories/users';
 import { MAX_SHIFT_HOURS, openShiftForUser } from '../services/shift.service';
 import { runSerialized } from '../utils/keyedQueue';
@@ -43,6 +43,11 @@ router.post('/auth/login', loginRateLimit, async (req, res, next) => {
     if (!user || !senhaConfere) {
       throw new UnauthorizedError('credenciais inválidas');
     }
+    // Daqui para baixo a credencial está certa e o que vier é regra de negócio
+    // (plantão fechado), não ataque. O limitador é o primeiro middleware da rota
+    // e conta antes de saber disso: sem devolver as marcas, o atendente que tenta
+    // entrar antes do turno chega no horário trancado por 429.
+    perdoarLogin(req);
 
     // O atendente entra pelo plantão: o login abre a sessão de plantão e o token
     // vive exatamente o que falta dela. O admin não tem plantão.

@@ -134,6 +134,9 @@ export default function ConversaPage() {
       // no console e oferece botões de ações que já não existem.
       if (err instanceof ApiError && err.status === 404) {
         setSaiuDaLista(true);
+        // sem limpar, o cabeçalho segue mostrando o setor e a etiqueta
+        // "Esperando atendente" de uma conversa que já não é desta pessoa
+        setConversation(null);
         return;
       }
       setLoadError(readError(err, 'não foi possível falar com o servidor'));
@@ -178,6 +181,11 @@ export default function ConversaPage() {
   }, []);
 
   const caixaEncaminhar = useRef<HTMLDivElement>(null);
+  // quem abre guarda para onde o foco volta: o diálogo nasce com `autoFocus` no
+  // Cancelar, então na hora em que o hook monta o activeElement já é um botão
+  // de dentro da caixa — nó que ao fechar sai do DOM e não recebe foco nenhum
+  const origemEncaminhar = useRef<HTMLElement | null>(null);
+  const origemEncerrar = useRef<HTMLElement | null>(null);
 
   // No meio do envio não fecha: a transferência já pode ter sido aceita do
   // outro lado.
@@ -189,7 +197,7 @@ export default function ConversaPage() {
 
   // Escape e trava de Tab, como no ConfirmDialog: com o fundo alcançável, um
   // Enter fora da caixa encerraria o atendimento sem a pessoa ver o botão.
-  useDialogoModal(transferindo, caixaEncaminhar, fecharEncaminhar);
+  useDialogoModal(transferindo, caixaEncaminhar, fecharEncaminhar, origemEncaminhar);
 
   async function send(e: FormEvent) {
     e.preventDefault();
@@ -312,12 +320,19 @@ export default function ConversaPage() {
             </Button>
             {!saiuDaLista && (
               <>
-                <Button variant="secondary" onClick={abrirTransferencia}>
+                <Button
+                  variant="secondary"
+                  onClick={(e) => {
+                    origemEncaminhar.current = e.currentTarget;
+                    void abrirTransferencia();
+                  }}
+                >
                   Encaminhar
                 </Button>
                 <Button
                   variant="danger"
-                  onClick={() => {
+                  onClick={(e) => {
+                    origemEncerrar.current = e.currentTarget;
                     setCloseError(null);
                     setConfirmingClose(true);
                   }}
@@ -356,18 +371,6 @@ export default function ConversaPage() {
         <p aria-live="polite" className="sr-only">
           {anuncio}
         </p>
-
-        {saiuDaLista && (
-          <div className="mx-auto mt-8 max-w-md rounded-2xl border border-ink-200/70 bg-white p-6 text-center shadow-[var(--shadow-card)]">
-            <p className="font-medium text-ink-700">Esta conversa não está mais com você</p>
-            <p className="mt-1 text-sm leading-relaxed text-ink-500">
-              Ela foi encaminhada para outro setor, encerrada ou voltou para a fila.
-            </p>
-            <Button variant="secondary" className="mt-4" onClick={() => router.push('/conversas')}>
-              Ver minhas conversas
-            </Button>
-          </div>
-        )}
 
         {loaded && loadError && (
           <p className="sticky top-0 z-10 mx-auto mb-4 w-fit rounded-full bg-amber-100 px-3 py-1 text-xs font-medium text-amber-800 shadow-[var(--shadow-card)]">
@@ -429,8 +432,23 @@ export default function ConversaPage() {
       </main>
 
       {/* sem o campo no estado "saiu da lista": qualquer envio daqui já falharia
-          e o texto digitado se perderia */}
-      {!saiuDaLista && (
+          e o texto digitado se perderia. O aviso ocupa exatamente o lugar do
+          formulário, e não o meio do histórico: dentro do <main> ele subia junto
+          com as mensagens — a tela rola para a última a cada carga — e ficava
+          milhares de pixels acima da viewport. `role="alert"` porque quem usa
+          leitor de tela não recebia nada: os botões só sumiam. */}
+      {saiuDaLista ? (
+        <div role="alert" className="border-t border-ink-200 bg-white px-3 py-4 sm:px-6">
+          <p className="font-medium text-ink-800">Esta conversa não está mais com você</p>
+          <p className="mt-1 text-sm leading-relaxed text-ink-600">
+            Ela foi encaminhada para outro setor, encerrada ou voltou para a fila. O histórico acima
+            continua à mão, mas não dá mais para responder por aqui.
+          </p>
+          <Button variant="secondary" className="mt-3" onClick={() => router.push('/conversas')}>
+            Ver minhas conversas
+          </Button>
+        </div>
+      ) : (
       <form onSubmit={send} className="border-t border-ink-200 bg-white px-3 py-3 sm:px-6">
         {sendError && (
           <div
@@ -569,6 +587,7 @@ export default function ConversaPage() {
           pendingLabel="Encerrando…"
           pending={closing}
           error={closeError}
+          origemDoFoco={origemEncerrar}
           onCancel={() => setConfirmingClose(false)}
           onConfirm={close}
         />

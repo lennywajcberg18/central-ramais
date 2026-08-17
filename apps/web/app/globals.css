@@ -21,11 +21,20 @@
   --color-ink-100: #eef0f2;
   --color-ink-200: #e0e3e7;
   --color-ink-300: #c7ccd3;
-  /* ink-400 e ink-500 carregam quase todo o texto secundário do produto — hint,
-     placeholder, descrição de painel. Nos valores antigos (#98a1ab e #6b747f)
-     reprovavam na WCAG AA num monitor de posto de enfermagem com brilho baixo:
-     2,62:1 sobre branco e 4,46:1 sobre ink-50. Estes passam. */
-  --color-ink-400: #7d8791;
+  /* ink-400 e ink-500 carregam quase todo o texto secundário do produto — hora
+     da mensagem, placeholder, "atualizada agora", hint de campo. Num monitor de
+     posto de enfermagem com brilho baixo isso precisa dos 4,5:1 da WCAG AA para
+     texto normal, medidos no pior fundo em que cada um aparece.
+     ink-400 já foi #98a1ab (2,62:1) e depois #7d8791, que ainda dava 3,65:1
+     sobre branco, 3,61 sobre ink-50 e 3,48 na bolha de mensagem — reprovava nos
+     três. O valor de hoje dá 5,26:1 sobre branco, 4,94 sobre ink-50 e 4,74 na
+     bolha #d9fdd3, que é o fundo mais escuro que ele encosta (hora e autor da
+     mensagem, no histórico do gestor).
+     Ficou perto de ink-500 (5,65:1): o degrau entre os dois agora é pequeno de
+     propósito, porque o piso é a legibilidade. Hierarquia de texto secundário
+     se faz com tamanho e peso; quem precisar de cinza mais claro que isto usa
+     em ícone decorativo, nunca em texto. */
+  --color-ink-400: #646d77;
   --color-ink-500: #5f6873;
   --color-ink-600: #4d555f;
   --color-ink-700: #3a414a;

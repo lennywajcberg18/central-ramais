@@ -50,6 +50,11 @@ export default function AgentHeader() {
   const [erroEstado, setErroEstado] = useState<string | null>(null);
   const [, setTick] = useState(0);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const botaoMais = useRef<HTMLButtonElement | null>(null);
+  // para onde o foco volta quando o diálogo fecha. No celular não pode ser o
+  // item do menu: ele sai do DOM no mesmo commit em que o diálogo monta, e
+  // focar um nó destacado não faz nada — o foco cairia no <body>.
+  const origemDoConfirmar = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     const u = getSessionUser();
@@ -196,7 +201,14 @@ export default function AgentHeader() {
             </Button>
           )}
           {shift && (
-            <Button type="button" variant="secondary" onClick={() => setConfirmando(true)}>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={(e) => {
+                origemDoConfirmar.current = e.currentTarget;
+                setConfirmando(true);
+              }}
+            >
               Encerrar plantão
             </Button>
           )}
@@ -209,6 +221,7 @@ export default function AgentHeader() {
         <div ref={menuRef} className="relative shrink-0 sm:hidden">
           <button
             type="button"
+            ref={botaoMais}
             onClick={() => setMenuAberto((v) => !v)}
             aria-haspopup="menu"
             aria-expanded={menuAberto}
@@ -253,6 +266,7 @@ export default function AgentHeader() {
                   type="button"
                   role="menuitem"
                   onClick={() => {
+                    origemDoConfirmar.current = botaoMais.current;
                     setMenuAberto(false);
                     setConfirmando(true);
                   }}
@@ -296,6 +310,7 @@ export default function AgentHeader() {
           errorPrefix="Não foi possível encerrar"
           pending={encerrando}
           error={erro}
+          origemDoFoco={origemDoConfirmar}
           onCancel={() => setConfirmando(false)}
           onConfirm={encerrarPlantao}
         />

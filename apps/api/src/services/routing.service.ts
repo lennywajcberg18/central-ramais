@@ -53,12 +53,16 @@ export async function tryAssign(
 
     const agora = new Date();
     // A guarda no WHERE segura o que a fila não cobre: outra instância do
-    // processo, o próprio atendente assumindo pela tela no mesmo instante, e o
-    // escolhido encerrando o plantão entre a leitura dos elegíveis e o UPDATE.
+    // processo, o próprio atendente assumindo pela tela no mesmo instante, o
+    // escolhido encerrando o plantão entre a leitura dos elegíveis e o UPDATE, e
+    // o admin tirando ele deste setor no mesmo instante. Por isso o setor vai
+    // junto: quem recebe a conversa tem que atender ESTE ramal no instante do
+    // UPDATE, não no instante em que foi escolhido.
     const result = await conversations.assignToIfOnShift(
       tenantId,
       conversationId,
       chosen.id,
+      departmentId,
       agora
     );
     if (result.count === 0) return false;
@@ -75,6 +79,15 @@ export async function assignPendingForUser(tenantId: string, userId: string): Pr
 
   const pending = await conversations.listOpenForDepartments(tenantId, departmentIds);
   for (const conversation of pending) {
-    await tryAssign(tenantId, conversation.id);
+    try {
+      await tryAssign(tenantId, conversation.id);
+    } catch (err) {
+      // Uma conversa que não pôde ser distribuída não pode levar as outras junto —
+      // nem o login de quem acabou de entrar de plantão, que é o chamador
+      // principal e já criou a sessão e virou `available` antes de chegar aqui.
+      // A conversa continua `open` na fila do setor, à vista de todo mundo, e o
+      // próximo evento de rodízio tenta de novo.
+      console.error(`[routing] falha ao distribuir a conversa ${conversation.id}:`, err);
+    }
   }
 }
