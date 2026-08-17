@@ -270,8 +270,18 @@ recebendo chamado do hospital depois que o plantão acaba.**
   ```
 
 ### T4.3 — Contato entre ramais · `feat/ramal-interno`
-- [ ] Conversa interna entre dois setores, sem externo envolvido
-- [ ] Nova tela no app de quem atende
+- [x] Conversa interna entre dois setores, sem externo envolvido, com `internal_threads`
+      e `internal_messages`
+- [x] Quem enxerga é quem está no setor de **origem ou destino** — o assunto é do
+      ramal, não da pessoa: quem entra no plantão continua de onde pararam
+- [x] A mensagem guarda de que **lado** veio, e não quem escreveu: a colega do
+      mesmo setor lê a conversa do mesmo jeito
+- [x] Telas `/ramais` e `/ramais/[id]` no app de quem atende
+- [x] Navegação inferior no celular (Atendimento · Ramais), abas no desktop —
+      base do que vira a tab bar do aplicativo
+- **Testar:** entrar como `agente2@hospitalvida.test`, abrir **Ramais** →
+      **Chamar outro setor** → Faturamento. Entrar como quem atende o Faturamento
+      e conferir que a conversa aparece do outro lado.
 
 ### Backlog da reunião — ainda sem task
 - Número máximo de atendentes de plantão por setor ("no CT são três; chegou o
