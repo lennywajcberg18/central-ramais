@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Button } from '@/components/ui';
 
 export default function ConfirmDialog({
@@ -26,6 +27,12 @@ export default function ConfirmDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  // O diálogo é desenhado direto no body. Dentro de um cabeçalho `sticky` ele
+  // ficaria preso no stacking context daquele cabeçalho, e a barra de navegação
+  // do celular passaria por cima dos botões — inclusive capturando o toque.
+  const [montado, setMontado] = useState(false);
+  useEffect(() => setMontado(true), []);
+
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key === 'Escape') onCancel();
@@ -34,7 +41,9 @@ export default function ConfirmDialog({
     return () => window.removeEventListener('keydown', onKey);
   }, [onCancel]);
 
-  return (
+  if (!montado) return null;
+
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-ink-900/40 p-4 sm:items-center">
       <div
         role="dialog"
@@ -65,6 +74,7 @@ export default function ConfirmDialog({
           </Button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import AgentHeader from '@/components/AgentHeader';
+import AgentNav from '@/components/AgentNav';
 import { Badge, Button, Dot, EmptyState, ExplainCard, Panel, Skeleton } from '@/components/ui';
 import { api, ApiError, getSessionUser } from '@/lib/api';
 import { CONVERSATION_STATUS, formatPhone, relativeTime } from '@/lib/labels';
@@ -274,8 +275,9 @@ export default function ConversasPage() {
   return (
     <div className="mx-auto max-w-3xl">
       <AgentHeader />
+      <AgentNav />
 
-      <main className="space-y-5 px-4 py-6 sm:px-6">
+      <main className="space-y-5 px-4 pb-28 pt-5 sm:px-6 sm:pb-8">
         <p className="px-1 text-sm text-ink-500">
           Quem escreve de fora do hospital pelo WhatsApp aparece aqui.
         </p>

@@ -53,6 +53,20 @@ enum MessageDirection {
   outbound
 }
 
+// De que LADO da conversa a mensagem veio. Fica gravado no envio porque quem
+// escreveu pode atender os dois setores — e porque a conversa é do ramal: a
+// colega que entra no plantão seguinte tem que ver as mensagens do setor dela
+// do mesmo lado da tela.
+enum InternalSide {
+  origin
+  destination
+}
+
+enum InternalThreadStatus {
+  open
+  closed
+}
+
 enum ShiftEndReason {
   manual
   schedule
@@ -81,6 +95,8 @@ model Tenant {
   conversations    Conversation[]
   shifts           Shift[]
   shiftSessions    ShiftSession[]
+  internalThreads  InternalThread[]
+  internalMessages InternalMessage[]
 
   @@map("tenants")
 }
@@ -112,10 +128,12 @@ model Department {
   sortOrder Int      @default(0) @map("sort_order")
   createdAt DateTime @default(now()) @map("created_at")
 
-  tenant        Tenant                @relation(fields: [tenantId], references: [id])
-  users         UserDepartment[]
-  entryLinks    EntryLinkDepartment[]
-  conversations Conversation[]
+  tenant          Tenant                @relation(fields: [tenantId], references: [id])
+  users           UserDepartment[]
+  entryLinks      EntryLinkDepartment[]
+  conversations   Conversation[]
+  threadsSent     InternalThread[]      @relation("threadFrom")
+  threadsReceived InternalThread[]      @relation("threadTo")
 
   @@unique([tenantId, menuKey])
   @@index([tenantId, active])
@@ -137,8 +155,10 @@ model User {
   tenant        Tenant           @relation(fields: [tenantId], references: [id])
   departments   UserDepartment[]
   conversations Conversation[]
-  shifts        Shift[]
-  shiftSessions ShiftSession[]
+  shifts           Shift[]
+  shiftSessions    ShiftSession[]
+  internalThreads  InternalThread[]
+  internalMessages InternalMessage[]
 
   @@index([tenantId])
   @@map("users")
@@ -193,6 +213,48 @@ model UserDepartment {
 
   @@id([userId, departmentId])
   @@map("user_departments")
+}
+
+// Conversa entre dois ramais do hospital. Não tem externo envolvido e não passa
+// pelo WhatsApp: é a Enfermagem perguntando ao Faturamento, pela plataforma.
+model InternalThread {
+  id                 String               @id @default(uuid())
+  tenantId           String               @map("tenant_id")
+  fromDepartmentId   String               @map("from_department_id")
+  toDepartmentId     String               @map("to_department_id")
+  status             InternalThreadStatus @default(open)
+  createdByUserId    String               @map("created_by_user_id")
+  createdAt          DateTime             @default(now()) @map("created_at")
+  lastMessageAt      DateTime             @default(now()) @map("last_message_at")
+  closedAt           DateTime?            @map("closed_at")
+
+  tenant         Tenant            @relation(fields: [tenantId], references: [id])
+  fromDepartment Department        @relation("threadFrom", fields: [fromDepartmentId], references: [id])
+  toDepartment   Department        @relation("threadTo", fields: [toDepartmentId], references: [id])
+  createdBy      User              @relation(fields: [createdByUserId], references: [id])
+  messages       InternalMessage[]
+
+  @@index([tenantId, status, lastMessageAt])
+  @@index([tenantId, fromDepartmentId])
+  @@index([tenantId, toDepartmentId])
+  @@map("internal_threads")
+}
+
+model InternalMessage {
+  id         String       @id @default(uuid())
+  tenantId   String       @map("tenant_id")
+  threadId   String       @map("thread_id")
+  userId     String       @map("user_id")
+  senderSide InternalSide @map("sender_side")
+  body       String
+  createdAt  DateTime     @default(now()) @map("created_at")
+
+  tenant Tenant         @relation(fields: [tenantId], references: [id])
+  thread InternalThread @relation(fields: [threadId], references: [id])
+  user   User           @relation(fields: [userId], references: [id])
+
+  @@index([tenantId, threadId, createdAt])
+  @@map("internal_messages")
 }
 
 model EntryLink {

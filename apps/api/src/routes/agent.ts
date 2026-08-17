@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { BadRequestError, NotFoundError } from '../errors';
 import { requireAuth } from '../middleware/auth';
 import * as conversations from '../repositories/conversations';
+import * as departments from '../repositories/departments';
 import * as messagesRepo from '../repositories/messages';
 import * as users from '../repositories/users';
 import * as shifts from '../repositories/shifts';
@@ -11,6 +12,14 @@ import { sendConversationMessage } from '../services/messaging.service';
 import { assignPendingForUser } from '../services/routing.service';
 import { endShift } from '../services/shift.service';
 import { listTransferTargets, transferConversation } from '../services/transfer.service';
+import {
+  closeThread,
+  getThread,
+  listMessages as listInternalMessages,
+  listThreads,
+  reply as replyInternal,
+  startThread,
+} from '../services/internal.service';
 
 const router = Router();
 
@@ -145,6 +154,95 @@ router.post('/agent/conversations/:id/transfer', async (req, res, next) => {
       userId
     );
     res.json({ ok: true, ...resultado });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---- Ramal interno: um setor falando com outro, sem externo envolvido ----
+
+router.get('/agent/internal', async (req, res, next) => {
+  try {
+    const { tenantId, userId } = req.auth!;
+    res.json(await listThreads(tenantId, userId));
+  } catch (err) {
+    next(err);
+  }
+});
+
+const startThreadSchema = z.object({
+  fromDepartmentId: z.string().min(1),
+  toDepartmentId: z.string().min(1),
+  body: z.string().trim().min(1).max(4096),
+});
+
+router.post('/agent/internal', async (req, res, next) => {
+  try {
+    const { tenantId, userId } = req.auth!;
+    const parsed = startThreadSchema.safeParse(req.body);
+    if (!parsed.success) throw new BadRequestError('escreva a mensagem e escolha o setor');
+
+    const thread = await startThread(tenantId, userId, parsed.data);
+    res.status(201).json({ id: thread.id });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/agent/internal/:id', async (req, res, next) => {
+  try {
+    const { tenantId, userId } = req.auth!;
+    res.json(await getThread(tenantId, userId, req.params.id));
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/agent/internal/:id/messages', async (req, res, next) => {
+  try {
+    const { tenantId, userId } = req.auth!;
+    res.json(await listInternalMessages(tenantId, userId, req.params.id));
+  } catch (err) {
+    next(err);
+  }
+});
+
+const internalReplySchema = z.object({ body: z.string().trim().min(1).max(4096) });
+
+router.post('/agent/internal/:id/messages', async (req, res, next) => {
+  try {
+    const { tenantId, userId } = req.auth!;
+    const parsed = internalReplySchema.safeParse(req.body);
+    if (!parsed.success) throw new BadRequestError('escreva a mensagem');
+
+    await replyInternal(tenantId, userId, req.params.id, parsed.data.body);
+    res.status(201).json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/agent/internal/:id/close', async (req, res, next) => {
+  try {
+    const { tenantId, userId } = req.auth!;
+    await closeThread(tenantId, userId, req.params.id);
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Setores do hospital para quem atende — usado para escolher o destino do ramal
+// interno. Aqui é a lista do TENANT porque quem pergunta é de dentro; a regra do
+// link vale para o externo.
+router.get('/agent/departments', async (req, res, next) => {
+  try {
+    const { tenantId, userId } = req.auth!;
+    const [todos, meus] = await Promise.all([
+      departments.listActive(tenantId),
+      users.departmentIdsOf(tenantId, userId),
+    ]);
+    res.json(todos.map((d) => ({ id: d.id, name: d.name, mine: meus.includes(d.id) })));
   } catch (err) {
     next(err);
   }
