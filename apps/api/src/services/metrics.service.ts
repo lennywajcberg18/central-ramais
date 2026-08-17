@@ -22,8 +22,8 @@ export async function computeMetrics(
     .filter((c) => c.firstReplyAt)
     .map((c) => c.firstReplyAt!.getTime() - c.createdAt.getTime());
   const assigns = rows
-    .filter((c) => c.assignedAt)
-    .map((c) => c.assignedAt!.getTime() - c.createdAt.getTime());
+    .filter((c) => c.firstAssignedAt)
+    .map((c) => c.firstAssignedAt!.getTime() - c.createdAt.getTime());
   const resolutions = rows
     .filter((c) => c.closedAt)
     .map((c) => c.closedAt!.getTime() - c.createdAt.getTime());

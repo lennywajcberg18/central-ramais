@@ -5,9 +5,11 @@ import { requireAuth } from '../middleware/auth';
 import * as conversations from '../repositories/conversations';
 import * as messagesRepo from '../repositories/messages';
 import * as users from '../repositories/users';
+import * as shifts from '../repositories/shifts';
 import { closeFromAgent } from '../services/lifecycle.service';
 import { sendConversationMessage } from '../services/messaging.service';
 import { assignPendingForUser } from '../services/routing.service';
+import { endShift } from '../services/shift.service';
 
 const router = Router();
 
@@ -78,11 +80,13 @@ router.post('/agent/conversations/:id/messages', async (req, res, next) => {
 
     // agente respondendo conversa da fila assume o atendimento
     if (conversation.status === 'open') {
+      const agora = new Date();
       await conversations.update(tenantId, conversation.id, {
         status: 'assigned',
         assignedUserId: userId,
-        assignedAt: new Date(),
+        assignedAt: agora,
       });
+      await conversations.markFirstAssignedOnce(tenantId, conversation.id, agora);
     }
 
     await sendConversationMessage(
@@ -110,6 +114,34 @@ router.post('/agent/conversations/:id/close', async (req, res, next) => {
 
     await closeFromAgent(tenantId, conversation.id);
     res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// O cabeçalho do app mostra até quando vale o plantão de quem está logado.
+router.get('/agent/shift', async (req, res, next) => {
+  try {
+    const { tenantId, userId, role } = req.auth!;
+    if (role !== 'agent') {
+      res.json(null);
+      return;
+    }
+    const session = await shifts.findOpenSessionForUser(tenantId, userId);
+    res.json(session ? { startedAt: session.startedAt, endsAt: session.endsAt } : null);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// "Meu plantão acabou": encerra a sessão e devolve as conversas para a fila.
+router.post('/agent/shift/end', async (req, res, next) => {
+  try {
+    const { tenantId, userId, role } = req.auth!;
+    if (role !== 'agent') throw new BadRequestError('somente atendentes têm plantão');
+
+    const resultado = await endShift(tenantId, userId, 'manual');
+    res.json({ ok: true, releasedConversations: resultado.releasedConversations });
   } catch (err) {
     next(err);
   }

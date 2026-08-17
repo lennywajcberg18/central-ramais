@@ -56,6 +56,29 @@ export function closeFields(reason: CloseReason, status: ConversationStatus) {
   return { status, closeReason: reason, closedAt: new Date() };
 }
 
+// Conversa presa num atendente que saiu (desativado ou fim de plantão) some das
+// duas listas do app — a fila do setor e "as minhas" — e o externo espera para
+// sempre. Quem sai devolve o que estava com ele para a fila do ramal.
+// `assignedAt` volta a nulo porque ele diz quem está com a conversa AGORA — o
+// tempo de espera do externo fica guardado em `firstAssignedAt`, que é write-once.
+export function releaseFromUser(
+  tenantId: string,
+  userId: string,
+  client: Prisma.TransactionClient = prisma
+) {
+  return client.conversation.updateMany({
+    where: { tenantId, assignedUserId: userId, status: { in: ACTIVE_STATUSES } },
+    data: { status: 'open', assignedUserId: null, assignedAt: null },
+  });
+}
+
+export function listOpenAssignedTo(tenantId: string, userId: string) {
+  return prisma.conversation.findMany({
+    where: { tenantId, assignedUserId: userId, status: { in: ACTIVE_STATUSES } },
+    select: { id: true },
+  });
+}
+
 export function listOpenForDepartments(tenantId: string, departmentIds: string[]) {
   return prisma.conversation.findMany({
     where: { tenantId, status: 'open', departmentId: { in: departmentIds } },
@@ -89,6 +112,16 @@ export function findByIdWithRelations(tenantId: string, id: string) {
       externalContact: true,
       whatsappNumber: true,
     },
+  });
+}
+
+// Write-once: quem esperou na fila esperou uma vez só. Sem isto, cada troca de
+// plantão reescreveria o relógio e a conversa que atravessa a virada de turno
+// entraria na média como se tivesse esperado o turno inteiro.
+export function markFirstAssignedOnce(tenantId: string, id: string, at: Date) {
+  return prisma.conversation.updateMany({
+    where: { id, tenantId, firstAssignedAt: null },
+    data: { firstAssignedAt: at },
   });
 }
 

@@ -53,6 +53,12 @@ enum MessageDirection {
   outbound
 }
 
+enum ShiftEndReason {
+  manual
+  schedule
+  admin
+}
+
 enum SenderType {
   customer
   agent
@@ -73,6 +79,8 @@ model Tenant {
   externalContacts ExternalContact[]
   accessAttempts   AccessAttempt[]
   conversations    Conversation[]
+  shifts           Shift[]
+  shiftSessions    ShiftSession[]
 
   @@map("tenants")
 }
@@ -129,9 +137,51 @@ model User {
   tenant        Tenant           @relation(fields: [tenantId], references: [id])
   departments   UserDepartment[]
   conversations Conversation[]
+  shifts        Shift[]
+  shiftSessions ShiftSession[]
 
   @@index([tenantId])
   @@map("users")
+}
+
+// Escala do atendente: uma linha por faixa de plantão em um dia da semana.
+// Os minutos são contados desde 00:00 no fuso do tenant; `endMinute` menor que
+// `startMinute` significa plantão que vira o dia (19h às 7h).
+model Shift {
+  id          String   @id @default(uuid())
+  tenantId    String   @map("tenant_id")
+  userId      String   @map("user_id")
+  weekday     Int
+  startMinute Int      @map("start_minute")
+  endMinute   Int      @map("end_minute")
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  user   User   @relation(fields: [userId], references: [id])
+
+  @@index([tenantId, userId, weekday])
+  @@map("shifts")
+}
+
+// O plantão que está de fato acontecendo. Nasce no login do atendente e é o que
+// sustenta a sessão: sem uma sessão aberta aqui, o token não vale mais nada.
+model ShiftSession {
+  id        String          @id @default(uuid())
+  tenantId  String          @map("tenant_id")
+  userId    String          @map("user_id")
+  startedAt DateTime        @default(now()) @map("started_at")
+  endsAt    DateTime        @map("ends_at")
+  endedAt   DateTime?       @map("ended_at")
+  endReason ShiftEndReason? @map("end_reason")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  user   User   @relation(fields: [userId], references: [id])
+
+  // o job varre por sessões abertas vencidas; o middleware busca a do token
+  @@index([tenantId, userId, endedAt])
+  @@index([endedAt, endsAt])
+  @@map("shift_sessions")
 }
 
 model UserDepartment {
@@ -226,7 +276,11 @@ model Conversation {
   assignedUserId         String?            @map("assigned_user_id")
   closeReason            CloseReason?       @map("close_reason")
   createdAt              DateTime           @default(now()) @map("created_at")
+  // assignedAt é a atribuição ATUAL (usada no rodízio) e volta a nulo quando a
+  // conversa retorna para a fila; firstAssignedAt é write-once e é o que mede
+  // quanto o externo esperou até cair com alguém.
   assignedAt             DateTime?          @map("assigned_at")
+  firstAssignedAt        DateTime?          @map("first_assigned_at")
   firstReplyAt           DateTime?          @map("first_reply_at")
   closedAt               DateTime?          @map("closed_at")
   lastMessageAt          DateTime           @default(now()) @map("last_message_at")

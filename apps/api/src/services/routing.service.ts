@@ -23,11 +23,13 @@ export async function tryAssign(tenantId: string, conversationId: string): Promi
   agents.sort((a, b) => (lastByUser.get(a.id) ?? 0) - (lastByUser.get(b.id) ?? 0));
   const chosen = agents[0];
 
+  const agora = new Date();
   await conversations.update(tenantId, conversationId, {
     status: 'assigned',
     assignedUserId: chosen.id,
-    assignedAt: new Date(),
+    assignedAt: agora,
   });
+  await conversations.markFirstAssignedOnce(tenantId, conversationId, agora);
   return true;
 }
 

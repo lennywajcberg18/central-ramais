@@ -11,9 +11,11 @@ import * as conversations from '../repositories/conversations';
 import * as departments from '../repositories/departments';
 import * as entryLinks from '../repositories/entryLinks';
 import * as externalContacts from '../repositories/externalContacts';
+import * as shifts from '../repositories/shifts';
 import * as users from '../repositories/users';
 import { closeConversation } from '../services/lifecycle.service';
 import { computeMetrics } from '../services/metrics.service';
+import { reevaluateShift } from '../services/shift.service';
 import { buildPrefillText, generateEntryCode, generateSlug } from '../utils/ids';
 import { normalizeKeyword } from '../utils/text';
 
@@ -340,6 +342,62 @@ function linkToJson(link: Awaited<ReturnType<typeof entryLinks.list>>[number]) {
     })),
   };
 }
+
+const shiftEntrySchema = z
+  .object({
+    weekday: z.number().int().min(0).max(6),
+    // minutos desde 00:00; 1440 é meia-noite do dia seguinte, o que permite
+    // cadastrar tanto "07:00 às 19:00" quanto "19:00 às 07:00" (vira o dia)
+    startMinute: z.number().int().min(0).max(1439),
+    endMinute: z.number().int().min(1).max(1440),
+  })
+  .refine((s) => s.startMinute !== s.endMinute, 'a faixa de plantão não pode ter duração zero');
+
+const shiftsPutSchema = z.object({
+  shifts: z.array(shiftEntrySchema).max(21, 'no máximo três faixas por dia'),
+});
+
+router.get('/admin/users/:id/shifts', async (req, res, next) => {
+  try {
+    const { tenantId } = req.auth!;
+    const user = await users.findById(tenantId, req.params.id);
+    if (!user) throw new NotFoundError();
+    res.json(await shifts.listForUser(tenantId, user.id));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// A escala vai inteira de uma vez: o painel edita a semana toda numa tela só.
+router.put('/admin/users/:id/shifts', async (req, res, next) => {
+  try {
+    const { tenantId } = req.auth!;
+    const parsed = shiftsPutSchema.safeParse(req.body);
+    if (!parsed.success) throw new BadRequestError(firstIssue(parsed.error, 'escala inválida'));
+
+    const user = await users.findById(tenantId, req.params.id);
+    if (!user) throw new NotFoundError();
+    if (user.role !== 'agent') throw new BadRequestError('só atendentes têm escala de plantão');
+
+    await shifts.replaceForUser(tenantId, user.id, parsed.data.shifts);
+    // A escala nova pode ter tirado a pessoa do plantão de hoje ou mudado a
+    // hora de saída dela — o plantão em curso precisa acompanhar.
+    await reevaluateShift(tenantId, user.id);
+    res.json(await shifts.listForUser(tenantId, user.id));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Quem está de plantão agora — o admin precisa ver o hospital coberto.
+router.get('/admin/shift-sessions', async (req, res, next) => {
+  try {
+    const { tenantId } = req.auth!;
+    res.json(await shifts.listOpenSessionsWithUser(tenantId));
+  } catch (err) {
+    next(err);
+  }
+});
 
 router.get('/admin/entry-links', async (req, res, next) => {
   try {

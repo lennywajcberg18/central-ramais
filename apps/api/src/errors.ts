@@ -31,6 +31,15 @@ export class UnauthorizedError extends HttpError {
   }
 }
 
+// Credencial válida, acesso negado por regra (fora do horário de plantão).
+// Aqui 403 não vaza nada: quem recebe já provou ser o dono da conta. A regra de
+// responder 404 vale para recurso de outro tenant, que é outro caso.
+export class ForbiddenError extends HttpError {
+  constructor(message = 'acesso negado', details?: Record<string, unknown>) {
+    super(403, message, details);
+  }
+}
+
 // 404 também para recursos de outro tenant — 403 confirmaria a existência
 export class NotFoundError extends HttpError {
   constructor(message = 'não encontrado') {

@@ -1,8 +1,8 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { FormEvent, useState } from 'react';
-import { api, saveSession, SessionUser } from '@/lib/api';
+import { FormEvent, useEffect, useState } from 'react';
+import { ApiError, api, saveSession, SessionUser } from '@/lib/api';
 import { Button, ExplainCard, Field, inputClass } from '@/components/ui';
 
 const ICON_PROPS = {
@@ -93,12 +93,26 @@ const DEMO_ACCOUNTS = [
 
 const DEMO_PASSWORD = '123456';
 
+// Mensagens de quem foi devolvido para cá pelo fim do plantão. Sem elas, a
+// pessoa cai numa tela de login sem explicação e acha que o sistema caiu.
+const MOTIVOS: Record<string, string> = {
+  plantao: 'Seu plantão terminou e o acesso foi encerrado.',
+  'plantao-encerrado': 'Plantão encerrado. Suas conversas voltaram para a fila do setor.',
+};
+
 export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [aviso, setAviso] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  // lido do endereço em vez de useSearchParams: evita exigir Suspense na página
+  useEffect(() => {
+    const motivo = new URLSearchParams(window.location.search).get('motivo');
+    if (motivo) setAviso(MOTIVOS[motivo] ?? null);
+  }, []);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -111,8 +125,19 @@ export default function LoginPage() {
       });
       saveSession(data.token, data.user);
       router.push(data.user.role === 'admin' ? '/admin/dashboard' : '/conversas');
-    } catch {
-      setError('E-mail ou senha inválidos.');
+    } catch (err) {
+      // 403 é credencial certa barrada por regra de plantão: repetir a senha não
+      // resolve, e dizer "senha inválida" mandaria a pessoa para o lado errado.
+      if (err instanceof ApiError && err.status === 403) {
+        const proximo = err.details?.nextWindow;
+        setError(
+          typeof proximo === 'string' && proximo
+            ? `${err.message} Seu próximo plantão começa ${proximo}.`
+            : err.message
+        );
+      } else {
+        setError('E-mail ou senha inválidos.');
+      }
     } finally {
       setLoading(false);
     }
@@ -122,6 +147,7 @@ export default function LoginPage() {
     setEmail(demoEmail);
     setPassword(DEMO_PASSWORD);
     setError(null);
+    setAviso(null);
   }
 
   return (
@@ -178,6 +204,16 @@ export default function LoginPage() {
               </ul>
             </ExplainCard>
           </div>
+
+          {aviso && (
+            <p
+              role="status"
+              className="mt-5 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm leading-relaxed text-amber-800"
+            >
+              <AlertIcon className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>{aviso}</span>
+            </p>
+          )}
 
           <form onSubmit={handleSubmit} className="mt-6 space-y-5">
             <Field label="E-mail">

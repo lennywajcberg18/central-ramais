@@ -1,6 +1,6 @@
 import { Availability, Prisma, Role } from '@prisma/client';
 import { prisma } from '../prisma';
-import { ACTIVE_STATUSES } from './conversations';
+import { releaseFromUser } from './conversations';
 
 // Login não tem tenant ainda — email é único global e o tenant sai do usuário.
 export function findActiveByEmail(email: string) {
@@ -57,6 +57,8 @@ export async function departmentIdsOf(tenantId: string, userId: string): Promise
   return rows.map((r) => r.departmentId);
 }
 
+// Quem recebe conversa do ramal: além de disponível, tem que estar de plantão.
+// Sem esta condição, o chamado continuaria caindo para quem já foi para casa.
 export function availableAgentsForDepartment(tenantId: string, departmentId: string) {
   return prisma.user.findMany({
     where: {
@@ -65,6 +67,7 @@ export function availableAgentsForDepartment(tenantId: string, departmentId: str
       active: true,
       availability: 'available',
       departments: { some: { departmentId } },
+      shiftSessions: { some: { endedAt: null, endsAt: { gt: new Date() } } },
     },
   });
 }
@@ -99,23 +102,17 @@ export async function create(tenantId: string, input: CreateUserInput) {
   });
 }
 
-// Conversa presa num usuário inativo some das duas listas do app (a fila do
-// setor e "as minhas"): o externo espera para sempre. Desativar tem que soltar.
-function releaseConversations(tx: Prisma.TransactionClient, tenantId: string, userId: string) {
-  return tx.conversation.updateMany({
-    where: { tenantId, assignedUserId: userId, status: { in: ACTIVE_STATUSES } },
-    // assignedAt volta a nulo porque o tempo de atribuição que vale é o de quem
-    // assumir de fato depois — a conversa está de novo na fila, sem responsável.
-    data: { status: 'open', assignedUserId: null, assignedAt: null },
-  });
-}
-
 export async function update(
   tenantId: string,
   id: string,
   input: UpdateUserInput
 ): Promise<WriteUserResult> {
-  const { departmentIds, ...data } = input;
+  const { departmentIds, ...input_ } = input;
+  // Desativar por aqui deixa a pessoa exatamente como o DELETE deixa: sem
+  // acesso e fora do ar. Duas portas para a mesma coisa não podem divergir.
+  const data =
+    input_.active === false ? { ...input_, availability: Availability.offline } : input_;
+
   return prisma.$transaction(async (tx) => {
     // updateMany com data vazio devolve count 0, e a rota traduziria isso em 404.
     // Quando só os setores mudam, a existência é confirmada por um count próprio.
@@ -132,8 +129,16 @@ export async function update(
       });
     }
 
-    const released =
-      data.active === false ? (await releaseConversations(tx, tenantId, id)).count : 0;
+    if (data.active === false) {
+      // Mesma trava do DELETE: desativar por aqui também tem que encerrar o
+      // plantão, senão o painel segue mostrando como "de plantão agora" alguém
+      // que perdeu o acesso — e a reativação devolveria a sessão antiga.
+      await tx.shiftSession.updateMany({
+        where: { tenantId, userId: id, endedAt: null },
+        data: { endedAt: new Date(), endReason: 'admin' },
+      });
+    }
+    const released = data.active === false ? (await releaseFromUser(tenantId, id, tx)).count : 0;
     return { count, releasedConversations: released };
   });
 }
@@ -146,7 +151,14 @@ export function deactivate(tenantId: string, id: string): Promise<WriteUserResul
     });
     if (updated.count === 0) return { count: 0, releasedConversations: 0 };
 
-    const released = await releaseConversations(tx, tenantId, id);
+    // Desativar encerra o plantão junto: sessão aberta de quem não existe mais
+    // continuaria contando como gente dentro do hospital.
+    await tx.shiftSession.updateMany({
+      where: { tenantId, userId: id, endedAt: null },
+      data: { endedAt: new Date(), endReason: 'admin' },
+    });
+
+    const released = await releaseFromUser(tenantId, id, tx);
     return { count: updated.count, releasedConversations: released.count };
   });
 }
