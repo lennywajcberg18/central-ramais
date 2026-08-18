@@ -64,8 +64,12 @@ export async function departmentIdsOf(tenantId: string, userId: string): Promise
 
 // Quem recebe conversa do ramal: além de disponível, tem que estar de plantão.
 // Sem esta condição, o chamado continuaria caindo para quem já foi para casa.
-export function availableAgentsForDepartment(tenantId: string, departmentId: string) {
-  return prisma.user.findMany({
+export function availableAgentsForDepartment(
+  tenantId: string,
+  departmentId: string,
+  client: Prisma.TransactionClient = prisma
+) {
+  return client.user.findMany({
     where: {
       tenantId,
       role: 'agent',

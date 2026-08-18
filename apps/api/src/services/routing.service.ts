@@ -1,6 +1,7 @@
 import * as conversations from '../repositories/conversations';
 import * as users from '../repositories/users';
-import { runSerialized } from '../utils/keyedQueue';
+import { prisma } from '../prisma';
+import { advisoryLock, chaveDoRodizio } from '../repositories/locks';
 
 // Round-robin: agente disponível do setor que foi atribuído há mais tempo.
 // Sem agente disponível → a conversa fica em `open`, sem erro.
@@ -26,15 +27,22 @@ export async function tryAssign(
   }
   const departmentId = conversation.departmentId;
 
-  return runSerialized(`assign:${tenantId}:${departmentId}`, async () => {
-    // relê dentro da fila: enquanto esperávamos a vez, a conversa pode ter sido
+  // Ler os candidatos, escolher e gravar acontecem na MESMA transação, com a
+  // trava do setor tomada antes de tudo. Só a guarda do UPDATE não resolve: ela
+  // protege a CONVERSA, e duas conversas diferentes chegando juntas escrevem em
+  // linhas diferentes — as duas passam, as duas escolheram o mesmo atendente
+  // porque leram a mesma "última atribuição", e o rodízio deixa de rodar.
+  return prisma.$transaction(async (tx) => {
+    await advisoryLock(tx, chaveDoRodizio(tenantId, departmentId));
+
+    // relê DENTRO da trava: enquanto esperávamos a vez, a conversa pode ter sido
     // assumida, encerrada ou encaminhada para outro setor
-    const atual = await conversations.findById(tenantId, conversationId);
+    const atual = await conversations.findById(tenantId, conversationId, tx);
     if (!atual || atual.status !== 'open' || atual.departmentId !== departmentId) {
       return false;
     }
 
-    const todos = await users.availableAgentsForDepartment(tenantId, departmentId);
+    const todos = await users.availableAgentsForDepartment(tenantId, departmentId, tx);
     const agents = options.exceptUserId
       ? todos.filter((a) => a.id !== options.exceptUserId)
       : todos;
@@ -42,7 +50,8 @@ export async function tryAssign(
 
     const lastAssignments = await conversations.lastAssignedAtByUsers(
       tenantId,
-      agents.map((a) => a.id)
+      agents.map((a) => a.id),
+      tx
     );
     const lastByUser = new Map(
       lastAssignments.map((r) => [r.assignedUserId, r._max.assignedAt?.getTime() ?? 0])
@@ -52,13 +61,12 @@ export async function tryAssign(
     const chosen = agents[0];
 
     const agora = new Date();
-    // A guarda no WHERE segura o que a fila não cobre: outra instância do
-    // processo, o próprio atendente assumindo pela tela no mesmo instante, o
-    // escolhido encerrando o plantão entre a leitura dos elegíveis e o UPDATE, e
-    // o admin tirando ele deste setor no mesmo instante. Por isso o setor vai
-    // junto: quem recebe a conversa tem que atender ESTE ramal no instante do
-    // UPDATE, não no instante em que foi escolhido.
-    const result = await conversations.assignToIfOnShift(
+    // A guarda no WHERE continua necessária mesmo com a trava: ela cobre o que o
+    // rodízio não controla — o próprio atendente assumindo pela tela no mesmo
+    // instante, e o escolhido saindo de plantão ou do setor entre a leitura e a
+    // gravação.
+    const result = await conversations.assignToIfOnShiftEm(
+      tx,
       tenantId,
       conversationId,
       chosen.id,
@@ -67,7 +75,7 @@ export async function tryAssign(
     );
     if (result.count === 0) return false;
 
-    await conversations.markFirstAssignedOnce(tenantId, conversationId, agora);
+    await conversations.markFirstAssignedOnce(tenantId, conversationId, agora, tx);
     return true;
   });
 }

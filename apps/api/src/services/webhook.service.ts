@@ -21,7 +21,6 @@ import {
 } from './lifecycle.service';
 import { sendConversationMessage, sendLooseText } from './messaging.service';
 import { normalizeKeyword } from '../utils/text';
-import { runSerialized } from '../utils/keyedQueue';
 import { markSeen, wasSeen } from '../utils/seenMessageIds';
 import {
   MSG_ACCESS_REVOKED,
@@ -53,12 +52,19 @@ export async function handleInbound(msg: InboundMessage): Promise<void> {
     return;
   }
 
-  // Uma fila por contato (par destino+origem). O Twilio entrega em paralelo e
-  // o fluxo abaixo lê o estado antes de escrever: sem serializar, duas
-  // mensagens do mesmo contato abrem duas conversas.
-  return runSerialized(`${toNumber}|${waNumber}`, () =>
-    processInbound(msg, toNumber, waNumber)
-  );
+  // Não há mais fila por contato. Duas mensagens do mesmo número chegando juntas
+  // eram serializadas em memória, e essa garantia valia dentro de um processo só.
+  // Quem impede a segunda conversa agora é o banco: o índice parcial
+  // `conversations_uma_ativa_por_contato` mais o tratamento de P2002 em
+  // `createOrGetActive`, que devolve a conversa do vencedor em vez de abrir outra.
+  //
+  // O que se perde é a ORDEM entre duas mensagens simultâneas do mesmo contato, e
+  // isso não corrompe nada: toda transição do fluxo passa por `updateMany` com o
+  // estado esperado no WHERE, então a que chega fora de hora não casa, não escreve
+  // e a mensagem fica gravada na conversa — visível para quem atende. O Twilio
+  // também não promete ordem de entrega, então depender dela seria depender de
+  // algo que o provedor não dá.
+  return processInbound(msg, toNumber, waNumber);
 }
 
 async function processInbound(

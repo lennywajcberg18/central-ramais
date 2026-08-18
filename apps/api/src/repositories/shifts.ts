@@ -69,8 +69,22 @@ export function listOpenSessionsForUser(tenantId: string, userId: string) {
   });
 }
 
-export function createSession(tenantId: string, userId: string, endsAt: Date) {
-  return prisma.shiftSession.create({ data: { tenantId, userId, endsAt } });
+// Cria a sessão de plantão, ou devolve a que já estava aberta. Entrar pelo
+// celular e pelo computador no mesmo instante são dois logins lendo "não tem
+// plantão aberto"; o índice parcial `shift_sessions_uma_aberta_por_usuario`
+// derruba o segundo com P2002, e reaproveitar é exatamente o comportamento
+// pedido — é a mesma pessoa no mesmo plantão, e encerrar num lugar encerra no
+// outro.
+export async function createSession(tenantId: string, userId: string, endsAt: Date) {
+  try {
+    return await prisma.shiftSession.create({ data: { tenantId, userId, endsAt } });
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+      const aberta = await findOpenSessionForUser(tenantId, userId);
+      if (aberta) return aberta;
+    }
+    throw err;
+  }
 }
 
 // Fecha UMA sessão, e só se ela continuar vencida. O `endsAt <= at` é a trava

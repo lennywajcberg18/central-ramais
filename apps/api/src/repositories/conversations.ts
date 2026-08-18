@@ -77,8 +77,12 @@ export async function create(tenantId: string, input: CreateConversationInput) {
   return (await createOrGetActive(tenantId, input)).conversation;
 }
 
-export function findById(tenantId: string, id: string) {
-  return prisma.conversation.findFirst({ where: { id, tenantId } });
+export function findById(
+  tenantId: string,
+  id: string,
+  client: Prisma.TransactionClient = prisma
+) {
+  return client.conversation.findFirst({ where: { id, tenantId } });
 }
 
 // updateMany com tenantId + checagem de count no chamador: zero → 404
@@ -176,7 +180,22 @@ export async function assignToIfOnShift(
   // transação dele. Quem chega primeiro ganha: se for a atribuição, o release do
   // `endShift` varre a conversa de volta para a fila logo em seguida; se for a
   // saída, este SELECT espera, relê a linha já `offline` e o `EXISTS` reprova.
-  return prisma.$transaction(async (tx) => {
+  return prisma.$transaction((tx) => assignToIfOnShiftEm(tx, tenantId, id, userId, departmentId, at));
+}
+
+// O mesmo, dentro de uma transação que já existe. O rodízio precisa disto porque
+// a escolha do atendente e a gravação têm que viver na MESMA transação da trava
+// por setor — se a gravação abrisse a sua própria, a trava já teria sido solta
+// quando ela acontecesse, e duas conversas voltariam a cair na mesma pessoa.
+export async function assignToIfOnShiftEm(
+  tx: Prisma.TransactionClient,
+  tenantId: string,
+  id: string,
+  userId: string,
+  departmentId: string,
+  at: Date
+): Promise<{ count: number }> {
+  {
     await tx.$queryRaw`
       SELECT 1 FROM users WHERE id = ${userId} AND tenant_id = ${tenantId} FOR UPDATE`;
 
@@ -205,7 +224,7 @@ export async function assignToIfOnShift(
                   AND u.availability = 'available'
              )`;
     return { count };
-  });
+  }
 }
 
 // Encerrar é uma corrida com tudo o mais: entre ler a conversa e gravar o
@@ -350,8 +369,13 @@ export function findByIdForAgent(tenantId: string, userId: string, id: string) {
 // Write-once: quem esperou na fila esperou uma vez só. Sem isto, cada troca de
 // plantão reescreveria o relógio e a conversa que atravessa a virada de turno
 // entraria na média como se tivesse esperado o turno inteiro.
-export function markFirstAssignedOnce(tenantId: string, id: string, at: Date) {
-  return prisma.conversation.updateMany({
+export function markFirstAssignedOnce(
+  tenantId: string,
+  id: string,
+  at: Date,
+  client: Prisma.TransactionClient = prisma
+) {
+  return client.conversation.updateMany({
     where: { id, tenantId, firstAssignedAt: null },
     data: { firstAssignedAt: at },
   });
@@ -393,8 +417,12 @@ export function listForMetrics(tenantId: string, from: Date, to: Date, departmen
 }
 
 // Round-robin: quando cada agente recebeu sua última conversa
-export function lastAssignedAtByUsers(tenantId: string, userIds: string[]) {
-  return prisma.conversation.groupBy({
+export function lastAssignedAtByUsers(
+  tenantId: string,
+  userIds: string[],
+  client: Prisma.TransactionClient = prisma
+) {
+  return client.conversation.groupBy({
     by: ['assignedUserId'],
     where: { tenantId, assignedUserId: { in: userIds } },
     _max: { assignedAt: true },
