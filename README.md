@@ -41,3 +41,23 @@ apps/api        Express + TypeScript + Prisma (porta 3001)
 apps/web        Next.js App Router + Tailwind (porta 3000)
 packages/shared Tipos compartilhados (status, roles, DTOs)
 ```
+
+## Documentação
+
+- `PROJETO.md` — a especificação: o que o produto faz e as regras de negócio.
+- `CLAUDE.md` — as regras do repositório, válidas para humano ou IA.
+- `TASKS.md` — as tasks do MVP, com o comando de teste manual de cada uma.
+- `docs/auditoria/` — a auditoria de 17/08/2026:
+
+| arquivo | para quê |
+|---|---|
+| `RELATORIO.md` | o que foi auditado, o que se achou, o que se corrigiu e o que sobrou |
+| `THREAT-MODEL.md` | as ameaças modeladas para este produto, e o que protege cada uma |
+| `MATRIZ-DE-CENARIOS.md` | os cenários por jornada e a suíte de testes que falta |
+| `ROADMAP.md` | o produto priorizado, com os próximos 30 dias |
+| `SEGURANCA-OPERACIONAL.md` | o guia de quem opera: variáveis, rotação de segredo, incidentes |
+| `MUDANCAS.md` | o que mudou no código e quais invariantes não podem ser desfeitos |
+| `PENDENCIAS.md` | o que ficou para depois, separado por quem decide |
+
+Antes de levar isto para um hospital de verdade, leia `PENDENCIAS.md` — o bloco
+"fazer antes de um hospital real usar" existe para essa pergunta.
