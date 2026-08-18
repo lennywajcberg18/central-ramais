@@ -1,6 +1,6 @@
 import * as conversations from '../repositories/conversations';
 import * as users from '../repositories/users';
-import { prisma } from '../prisma';
+import { prisma, LIMITES_DE_TRANSACAO } from '../prisma';
 import { advisoryLock, chaveDoRodizio } from '../repositories/locks';
 
 // Round-robin: agente disponível do setor que foi atribuído há mais tempo.
@@ -77,7 +77,7 @@ export async function tryAssign(
 
     await conversations.markFirstAssignedOnce(tenantId, conversationId, agora, tx);
     return true;
-  });
+  }, LIMITES_DE_TRANSACAO);
 }
 
 // Disparado quando um agente fica disponível: pega a fila dos setores dele.

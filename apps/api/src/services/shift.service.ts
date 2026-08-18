@@ -1,5 +1,5 @@
 import { Prisma, ShiftEndReason, ShiftSession } from '@prisma/client';
-import { prisma } from '../prisma';
+import { prisma, LIMITES_DE_TRANSACAO } from '../prisma';
 import * as conversations from '../repositories/conversations';
 import * as shifts from '../repositories/shifts';
 import * as tenants from '../repositories/tenants';
@@ -230,7 +230,7 @@ export async function endShift(
     const f = await shifts.closeSessionsOfUser(tenantId, userId, reason, tx);
     const s = await releaseUserWork(tenantId, userId, tx);
     return { fechadas: f, soltas: s };
-  });
+  }, LIMITES_DE_TRANSACAO);
 
   // Fora da transação, de propósito: reoferecer manda mensagem de WhatsApp, e
   // efeito externo dentro de transação não tem como ser desfeito. Falhar aqui só
@@ -294,7 +294,7 @@ export async function expireDueShifts(at: Date = new Date()): Promise<number> {
           await users.setAvailability(tenant.id, session.userId, 'offline', tx);
           const s = await releaseUserWork(tenant.id, session.userId, tx);
           return { fechada: f, soltas: s };
-        });
+        }, LIMITES_DE_TRANSACAO);
         if (fechada.count > 0) encerrados++;
 
         // Depois do fim gravado, nunca antes. `count` zero significa que a escala
