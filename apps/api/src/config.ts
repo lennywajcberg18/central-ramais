@@ -55,10 +55,12 @@ const envSchema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((v) => v === 'true'),
-  // O Render injeta RENDER_EXTERNAL_URL com a URL pública do serviço — usar como
-  // padrão evita repetir o domínio na configuração do deploy.
+  // A plataforma já sabe a URL pública do serviço; repeti-la à mão numa variável
+  // é como o QR code de um deploy de preview acaba apontando para o de produção.
+  // A Vercel injeta VERCEL_URL sem esquema (só o host), daí o https:// na frente.
   PUBLIC_BASE_URL: urlNormalizada.default(
-    process.env.RENDER_EXTERNAL_URL ?? 'http://localhost:3001'
+    process.env.RENDER_EXTERNAL_URL ??
+      (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3001')
   ),
   WEB_ORIGIN: urlNormalizada.default('http://localhost:3000'),
 });

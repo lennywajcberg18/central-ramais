@@ -4,7 +4,6 @@
     "gru1"
   ],
   "buildCommand": "prisma generate",
-  "installCommand": "npm install --workspaces --include-workspace-root",
   "rewrites": [
     {
       "source": "/(.*)",
