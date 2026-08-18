@@ -14,6 +14,9 @@ import '../src/config';
 import { prisma } from '../src/prisma';
 import { tryAssign } from '../src/services/routing.service';
 import { openShiftForUser } from '../src/services/shift.service';
+import { recusarSeEnvioForReal } from './guarda';
+
+recusarSeEnvioForReal('check-distribuicao');
 
 const RODADAS = 6;
 

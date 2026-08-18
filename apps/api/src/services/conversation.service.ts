@@ -39,7 +39,7 @@ export async function startConversation(
   const departments = await entryLinks.listDepartmentsForLink(ctx.tenantId, ctx.link.id);
 
   if (departments.length === 0) {
-    await sendLooseText(ctx.whatsappNumber.phoneNumber, ctx.waNumber, MSG_NO_DEPARTMENTS);
+    await sendLooseText(ctx.tenantId, ctx.whatsappNumber.phoneNumber, ctx.waNumber, MSG_NO_DEPARTMENTS);
     return null;
   }
 

@@ -12,6 +12,12 @@ interface Shift {
   endsAt: string;
 }
 
+interface Setor {
+  id: string;
+  name: string;
+  mine: boolean;
+}
+
 function horaLocal(iso: string): string {
   return new Date(iso).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 }
@@ -42,6 +48,7 @@ export default function AgentHeader() {
   const router = useRouter();
   const [user, setUser] = useState<SessionUser | null>(null);
   const [shift, setShift] = useState<Shift | null>(null);
+  const [meusSetores, setMeusSetores] = useState<string[] | null>(null);
   const [menuAberto, setMenuAberto] = useState(false);
   const [confirmando, setConfirmando] = useState(false);
   const [encerrando, setEncerrando] = useState(false);
@@ -73,12 +80,24 @@ export default function AgentHeader() {
     }
   }, []);
 
+  // Uma vez só, e não no laço de 30s: o setor de um atendente não muda no meio do
+  // turno — e quando o admin muda, o plantão cai junto e a tela recarrega inteira.
+  const carregarSetores = useCallback(async () => {
+    try {
+      const todos = await api<Setor[]>('/agent/departments');
+      setMeusSetores(todos.filter((d) => d.mine).map((d) => d.name));
+    } catch {
+      // sem os setores o cabeçalho só fica menos informativo; não vale derrubar nada
+    }
+  }, []);
+
   useEffect(() => {
     if (user?.role !== 'agent') return;
     void carregarPlantao();
+    void carregarSetores();
     const t = setInterval(() => setTick((n) => n + 1), 30_000);
     return () => clearInterval(t);
-  }, [user?.role, carregarPlantao]);
+  }, [user?.role, carregarPlantao, carregarSetores]);
 
   // o menu fecha ao tocar fora ou no Escape, como qualquer menu de app
   useEffect(() => {
@@ -177,6 +196,24 @@ export default function AgentHeader() {
               </>
             )}
           </p>
+          {/* Linha própria, e não emendada na de cima: no celular a de cima já
+              trunca com nome e horário, e o setor é justamente o que responde
+              "por que esta conversa veio para mim?". */}
+          {meusSetores !== null && (
+            <p className="truncate text-xs text-ink-500">
+              {meusSetores.length > 0 ? (
+                <>
+                  <span className="text-ink-400">Atende</span> {meusSetores.join(' · ')}
+                </>
+              ) : (
+                // Sem setor nenhum o rodízio nunca encaminha nada, e a tela vazia
+                // pareceria "dia parado" em vez de cadastro incompleto.
+                <span className="font-medium text-amber-700">
+                  Sem setor — nenhuma conversa chega até você. Fale com o administrador.
+                </span>
+              )}
+            </p>
+          )}
         </div>
 
         {/* tela grande: as ações ficam à vista */}

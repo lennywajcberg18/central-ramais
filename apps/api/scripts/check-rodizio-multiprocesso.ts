@@ -14,6 +14,9 @@ import { fork } from 'node:child_process';
 import path from 'node:path';
 import { prisma } from '../src/prisma';
 import { openShiftForUser } from '../src/services/shift.service';
+import { recusarSeEnvioForReal } from './guarda';
+
+recusarSeEnvioForReal('check-rodizio-multiprocesso');
 
 const RODADAS = 6;
 
