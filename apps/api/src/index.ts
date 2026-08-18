@@ -20,8 +20,9 @@ const server = app.listen(config.PORT, () => {
 
 let desligando = false;
 
-// Todo deploy no Render manda SIGTERM. Sem drenar, o processo morre no meio da
-// requisição em voo — e closeWithCsat grava o encerramento ANTES de enviar a
+// Este arquivo é o modo `npm run dev`: em produção quem escuta a porta é a
+// plataforma, e as varreduras vêm do cron pelo HTTP. O drain continua valendo
+// aqui — um Ctrl+C sem drenar mata a requisição em voo — e closeWithCsat grava o encerramento ANTES de enviar a
 // pergunta de nota, então morrer entre as duas linhas deixa a conversa em
 // awaiting_feedback com closed_at gravado e ninguém pergunta nada: o job de
 // inatividade exclui awaiting_feedback de propósito, nada reprocessa. Some junto
@@ -36,13 +37,14 @@ function desligar(sinal: string): void {
   if (shiftJob) clearInterval(shiftJob);
 
   server.close(() => {
-    // Devolver as conexões do pool importa: no Postgres free do Render, segurá-las
-    // até o timeout do servidor pode impedir a instância nova de conectar.
+    // Devolver as conexões do pool importa: o plano free do Supabase tem teto de
+    // conexões, e segurá-las até o timeout do servidor pode impedir a próxima
+    // execução de conectar.
     void prisma.$disconnect().finally(() => process.exit(0));
   });
 
-  // Teto próprio, abaixo dos ~30 s que o Render espera antes do SIGKILL: uma
-  // conexão pendurada não pode transformar drain em processo zumbi.
+  // Teto próprio: uma conexão pendurada não pode transformar drain em processo
+  // zumbi que segura a porta e impede o `npm run dev` seguinte de subir.
   setTimeout(() => {
     console.error('[api] drain não terminou em 20s, saindo à força');
     process.exit(1);

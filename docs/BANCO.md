@@ -1,7 +1,8 @@
 # O banco
 
 O Postgres da aplicação é um projeto Supabase chamado `central-ramais`, região
-São Paulo (`sa-east-1`). O Postgres do `render.yaml` não é mais usado.
+São Paulo (`sa-east-1`). A aplicação roda na Vercel, região `gru1`, na mesma
+cidade.
 
 ## Por que duas connection strings
 
@@ -37,8 +38,8 @@ Address: 2600:1f1e:c3:2701:...        <- só IPv6, nenhum registro A
 repositório é público e a porta do banco está aberta na internet — não há motivo
 para publicar o endereço exato.)
 
-Sem o add-on de IPv4, o host direto só existe em IPv6. Render e Vercel rodam em
-rede IPv4. De lá, esse endereço simplesmente não resolve. Por isso as duas
+Sem o add-on de IPv4, o host direto só existe em IPv6, e a rede da Vercel é IPv4.
+De lá, esse endereço simplesmente não resolve. Por isso as duas
 variáveis ficam no pooler, em modos diferentes.
 
 ## A API REST pública do Supabase, e por que ela está fechada
@@ -95,10 +96,11 @@ erros que **não dariam erro** — o motivo de estarem lá.
    provável, não o descuidado. O sintoma seria
    `prepared statement "s0" already exists`, só sob carga.
 3. **`DATABASE_URL` e `DIRECT_URL` em servidores diferentes.** Este é o guarda
-   que importa. No Render, trocar `fromDatabase` por `sync: false` **não apaga**
-   o valor que o serviço já guardava: quem preenche só `DIRECT_URL` fica com as
-   migrations no banco novo e a aplicação no antigo, as duas coisas funcionando,
-   os dados se dividindo em dois. Sem esse guarda, a descoberta vem meses depois.
+   que importa. Um painel preenchido pela metade — e plataforma
+   nenhuma avisa — deixa as migrations no banco novo e a aplicação no antigo, as
+   duas coisas funcionando, os dados se dividindo em dois. Foi assim que o Render
+   se comportou ao trocar `fromDatabase` por `sync: false`: o valor antigo ficou.
+   Sem esse guarda, a descoberta vem meses depois.
    O escape é `ALLOW_SPLIT_DB_HOSTS=true`, para o caso legítimo de usar a
    conexão direta por IPv6 só nas migrations.
 
@@ -118,11 +120,10 @@ volta de **55 conversas simultâneas no mesmo setor**; de uma região distante,
 metade disso. `LIMITES_DE_TRANSACAO` em `src/prisma.ts` deixa os limites
 explícitos em vez de herdar um padrão escolhido para banco co-localizado.
 
-**A distância é um problema em aberto.** O `render.yaml` não declara região, e o
-padrão do Render é Oregon — cada query da API atravessaria o continente para
-chegar a São Paulo. O Render free não oferece região no Brasil. A saída é a
-Vercel com função em `gru1`, que é o passo seguinte do plano; até lá, a
-demonstração funciona mas paga esse pedágio em toda requisição.
+**A distância deixou de ser problema.** A função roda em `gru1` (São Paulo), na
+mesma cidade do banco — declarado em `apps/api/vercel.json`. O padrão da Vercel
+seria `iad1` (Washington), e aí cada query atravessaria o continente. O plano
+Hobby permite uma região, que é exatamente quanto basta.
 
 ## As travas do rodízio sobrevivem ao pooler
 
@@ -172,9 +173,9 @@ npx tsx scripts/check-distribuicao-concorrente.ts
 
 1. **O projeto pausa após 7 dias sem atividade.** Um projeto pausado não aceita
    conexão, e a API responde 503 no `/health`. Para uma demonstração que alguém
-   pode abrir semanas depois, isto é o mesmo problema do banco do Render que
-   expirava — só com outro relógio. Despausar é um clique no painel, mas alguém
-   precisa saber que é isso.
+   pode abrir semanas depois, é o suficiente para a demonstração estar fora do ar
+   na hora errada. Despausar é um clique no painel, mas alguém precisa saber que
+   é isso — o sintoma é `/health` respondendo 503.
 2. **O free permite 2 projetos ativos por organização.** Hoje são
    `central-ramais` e `ner-conquistas`; `alfred-db` está pausado e por isso não
    conta. Despausar o Alfred exige pausar outro ou assinar o Pro.
@@ -183,7 +184,7 @@ npx tsx scripts/check-distribuicao-concorrente.ts
 
 Gerada na criação do projeto, 32 caracteres alfanuméricos (sem símbolos, que
 quebrariam a connection string sem escape). Vive em `apps/api/.env.supabase` e
-no painel do Render — em lugar nenhum versionado.
+nas variáveis dos projetos da Vercel — em lugar nenhum versionado.
 
 Para rodar: *Project Settings → Database → Reset database password* no painel do
 Supabase, e atualizar as duas variáveis nos dois lugares. Rotacione se ela

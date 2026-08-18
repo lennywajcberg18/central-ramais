@@ -18,39 +18,30 @@ npm run dev                     # 5. api:3001  web:3000
 O seed imprime as credenciais dos usuários e os códigos dos entry links.
 O provider padrão em dev é o `MockProvider` — nada sai de verdade.
 
-## Deploy de demonstração
+## Deploy
 
-`render.yaml` é um blueprint do [Render](https://render.com): sobe API e web em
-dois serviços do plano free, a partir deste repositório. No painel do Render,
-*New → Blueprint* apontando para o repo faz o resto.
+Dois projetos na [Vercel](https://vercel.com) e um banco no
+[Supabase](https://supabase.com), os três em São Paulo.
 
-O banco não vem junto: é um projeto [Supabase](https://supabase.com) em São
-Paulo, e as duas variáveis que apontam para ele (`DATABASE_URL` e `DIRECT_URL`)
-entram na mão no painel, porque carregam a senha e este repositório é público.
-Por que são duas, e por que nenhuma delas é a conexão direta, está em
+| | |
+|---|---|
+| API | https://central-ramais-api.vercel.app |
+| Painel | https://central-ramais-web.vercel.app |
+| Banco | projeto Supabase `central-ramais`, região São Paulo |
+
+Push em `main` publica os dois. O passo a passo — variáveis, ordem de deploy e o
+agendamento das varreduras — está em `docs/DEPLOY.md`; o banco, em
 `docs/BANCO.md`.
 
-Duas armadilhas para quem clonar o blueprint. O bloco `databases:` do
-`render.yaml` ainda provisiona um Postgres que **ninguém consome** — ele existe
-só como rede desta migração e pode ser removido; a API não sobe sem um projeto
-Supabase à parte. E, num serviço que já existia, trocar `fromDatabase` por
-`sync: false` não apaga o valor que o Render já guardava: se você preencher só
-uma das duas variáveis, as migrations vão para um banco e a aplicação para outro.
-O boot recusa essa combinação de propósito (`apps/api/src/config.ts`), porque ela
-não dá erro em lugar nenhum.
+As varreduras de inatividade e de fim de plantão **não** rodam no cron da Vercel:
+no plano Hobby ele executa uma vez por dia, e uma expressão mais frequente faz o
+deploy falhar. Quem marca a hora é o `pg_cron` do próprio Supabase, chamando a
+API de minuto em minuto (`npm run cron:agendar -w api`).
 
-Migrations rodam no start (`prisma migrate deploy`) e o seed só é executado com
-`ALLOW_DEMO_SEED=true` **e** o banco vazio (`scripts/seed-if-empty.ts`) — restart
-não apaga dados. Quem clonar este blueprint para uso real deve deixar a variável
-de fora: ela é o que impede o banco novo de nascer com os usuários de
-demonstração e suas senhas fracas.
-
-Limites do plano free, que valem como alarme e não como nota de rodapé: os
-serviços do Render hibernam após 15 minutos sem acesso (a primeira visita depois
-disso leva ~50s) e o projeto do Supabase **pausa após 7 dias sem atividade** —
-pausado, ele recusa conexão e o `/health` responde 503. Uma demonstração que
-alguém abre duas semanas depois encontra isso. É ambiente de demonstração, não
-de produção.
+Limites do plano gratuito, que valem como alarme e não como rodapé: o projeto do
+Supabase **pausa após 7 dias sem atividade** — pausado, ele recusa conexão e o
+`/health` responde 503. Uma demonstração que alguém abre duas semanas depois
+encontra isso. É ambiente de demonstração, não de produção.
 
 ## Estrutura
 
