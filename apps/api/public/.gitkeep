@@ -1,0 +1,9 @@
+Diretório vazio de propósito.
+
+Este projeto da Vercel não serve nada estático: toda rota é reescrita para a
+função em `api/index.ts`. Mas o `vercel.json` declara um `buildCommand`
+(`prisma generate`, que precisa rodar para o motor do banco existir), e com um
+build declarado a Vercel exige um diretório de saída — sem ele o deploy falha
+com STATIC_BUILD_NO_OUT_DIR.
+
+Este é esse diretório. Se ele sumir, o deploy da API para de funcionar.

@@ -1,10 +1,9 @@
 import { Prisma, ShiftEndReason, ShiftSession } from '@prisma/client';
-import { prisma } from '../prisma';
+import { prisma, LIMITES_DE_TRANSACAO } from '../prisma';
 import * as conversations from '../repositories/conversations';
 import * as shifts from '../repositories/shifts';
 import * as tenants from '../repositories/tenants';
 import * as users from '../repositories/users';
-import { runSerialized } from '../utils/keyedQueue';
 import { describeNextWindow, localNow, shiftEndsAt } from '../utils/shiftClock';
 import { assignPendingForUser, tryAssign } from './routing.service';
 
@@ -44,38 +43,20 @@ async function coberturaAtual(tenantId: string, userId: string, at: Date): Promi
   };
 }
 
-// Escala e sessão de plantão da mesma pessoa são um par: quem lê um para
-// escrever o outro entra nesta fila. Sem ela, o login lia a escala velha e criava
-// a sessão DEPOIS que o `reevaluateShift` do admin já tinha desistido por não
-// achar sessão aberta — a pessoa entrava de plantão com uma escala que acabara de
-// deixar de existir, e nada reavaliava aquela sessão nunca mais.
-function shiftKey(tenantId: string, userId: string): string {
-  return `shift:${tenantId}:${userId}`;
-}
-
 // Substitui a escala e ajusta o plantão em curso numa operação só — as duas
 // coisas separadas é que abriam a janela.
-export function replaceSchedule(
+export async function replaceSchedule(
   tenantId: string,
   userId: string,
   entries: shifts.ShiftInput[]
 ): Promise<void> {
-  return runSerialized(shiftKey(tenantId, userId), async () => {
-    await shifts.replaceForUser(tenantId, userId, entries);
-    await reevaluateShiftSemFila(tenantId, userId);
-  });
+  await shifts.replaceForUser(tenantId, userId, entries);
+  await reevaluateShift(tenantId, userId);
 }
 
 // Chamada depois que o admin troca a escala. Escala nova pode ter tirado a
 // pessoa do plantão (encerra) ou mudado a hora de saída (reajusta o fim).
-export function reevaluateShift(tenantId: string, userId: string): Promise<void> {
-  return runSerialized(shiftKey(tenantId, userId), () =>
-    reevaluateShiftSemFila(tenantId, userId)
-  );
-}
-
-// O corpo, já dentro da fila. Chamar direto de fora reabre a corrida.
-async function reevaluateShiftSemFila(tenantId: string, userId: string): Promise<void> {
+export async function reevaluateShift(tenantId: string, userId: string): Promise<void> {
   // TODAS as sessões abertas, não a mais recente: uma órfã deixada por um login
   // duplo de antes desta correção sobreviveria ao encurtamento de escala com a
   // hora de saída antiga.
@@ -101,15 +82,14 @@ async function reevaluateShiftSemFila(tenantId: string, userId: string): Promise
 // Abre (ou reaproveita) o plantão do atendente. Reaproveitar importa: entrar
 // pelo celular e pelo computador é a mesma pessoa no mesmo plantão, e encerrar
 // num lugar tem que encerrar no outro.
-export function openShiftForUser(tenantId: string, userId: string): Promise<OpenShiftResult> {
-  // Entrar pelo celular e pelo computador no mesmo instante — ou dar dois
-  // cliques no botão — eram dois logins lendo "não tem plantão aberto" e criando
-  // um cada. Duas sessões abertas fazem o job achar que o turno seguinte já
-  // começou e não devolver as conversas de quem saiu.
-  return runSerialized(shiftKey(tenantId, userId), () => openShiftSemFila(tenantId, userId));
-}
-
-async function openShiftSemFila(tenantId: string, userId: string): Promise<OpenShiftResult> {
+// A garantia de "uma sessão aberta por atendente" mora no índice parcial
+// `shift_sessions_uma_aberta_por_usuario`, e o `createSession` reaproveita a que
+// já existe quando perde a corrida. Não há mais fila em memória aqui: ela valia
+// dentro de um processo e sumia com o segundo.
+export async function openShiftForUser(
+  tenantId: string,
+  userId: string
+): Promise<OpenShiftResult> {
   const agora = new Date();
 
   const aberta = await shifts.findOpenSessionForUser(tenantId, userId);
@@ -136,6 +116,20 @@ async function openShiftSemFila(tenantId: string, userId: string): Promise<OpenS
   }
 
   const session = await shifts.createSession(tenantId, userId, capShiftEnd(fim, agora));
+
+  // Reconferência DEPOIS de criar, e é ela que substitui a antiga fila em
+  // memória. A escala foi lida antes desta linha; se o admin salvou uma escala
+  // nova no meio, o `reevaluateShift` dele não encontrou sessão aberta para
+  // ajustar (ela ainda não existia) e desistiu — a pessoa entrava de plantão com
+  // uma escala que acabara de deixar de existir, e nada reavaliava aquela sessão
+  // nunca mais. Aqui a ordem trabalha a favor: se o replaceForUser commitou antes
+  // deste SELECT, ele aparece; se commitou depois, o reevaluateShift dele já
+  // enxerga esta sessão e a ajusta. Um dos dois sempre pega.
+  const aindaCoberto = await coberturaAtual(tenantId, userId, agora);
+  if (!aindaCoberto.fim) {
+    await endShift(tenantId, userId, 'admin');
+    return { ok: false, hasSchedule: aindaCoberto.temEscala, nextWindow: aindaCoberto.proxima };
+  }
 
   // Entrar de plantão é ficar disponível e puxar o que estiver esperando no
   // ramal. Só no plantão novo: quem recarregou a página estando "ausente"
@@ -236,7 +230,7 @@ export async function endShift(
     const f = await shifts.closeSessionsOfUser(tenantId, userId, reason, tx);
     const s = await releaseUserWork(tenantId, userId, tx);
     return { fechadas: f, soltas: s };
-  });
+  }, LIMITES_DE_TRANSACAO);
 
   // Fora da transação, de propósito: reoferecer manda mensagem de WhatsApp, e
   // efeito externo dentro de transação não tem como ser desfeito. Falhar aqui só
@@ -300,7 +294,7 @@ export async function expireDueShifts(at: Date = new Date()): Promise<number> {
           await users.setAvailability(tenant.id, session.userId, 'offline', tx);
           const s = await releaseUserWork(tenant.id, session.userId, tx);
           return { fechada: f, soltas: s };
-        });
+        }, LIMITES_DE_TRANSACAO);
         if (fechada.count > 0) encerrados++;
 
         // Depois do fim gravado, nunca antes. `count` zero significa que a escala

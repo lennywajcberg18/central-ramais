@@ -10,7 +10,8 @@
     "seed": "prisma db seed",
     "studio": "prisma studio",
     "check:corridas": "tsx scripts/check-corridas.ts",
-    "check:distribuicao": "tsx scripts/check-distribuicao-concorrente.ts"
+    "check:distribuicao": "tsx scripts/check-distribuicao-concorrente.ts",
+    "check:multiprocesso": "tsx scripts/check-rodizio-multiprocesso.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

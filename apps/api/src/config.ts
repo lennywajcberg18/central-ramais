@@ -18,7 +18,28 @@ const urlNormalizada = z
 
 const envSchema = z.object({
   DATABASE_URL: z.string().min(1),
+  // Quem lê a DIRECT_URL é o `prisma migrate`, não o processo que está subindo.
+  // Ela é exigida no boot mesmo assim, por causa de como o Render se comporta:
+  // trocar `fromDatabase` por `sync: false` no blueprint NÃO apaga o valor que o
+  // serviço já guardava. Um painel preenchido pela metade produz o pior resultado
+  // possível — as migrations vão para o banco novo, a aplicação continua lendo e
+  // escrevendo no antigo, e não há erro nenhum para denunciar isso até alguém
+  // reparar meses depois que os dados se dividiram em dois.
+  DIRECT_URL: z.string().min(1),
+  // Escape para quem tem IPv6 de verdade: aí a DIRECT_URL pode ser a conexão
+  // direta (db.<ref>.supabase.co) enquanto a aplicação fica no pooler, e os dois
+  // hosts divergem legitimamente. Fora desse caso, hosts diferentes são o
+  // acidente descrito acima.
+  ALLOW_SPLIT_DB_HOSTS: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
   PORT: z.coerce.number().default(3001),
+  // Segredo do agendador. Sem processo vivo entre requisições, as varreduras
+  // viram endpoints HTTP — e endpoint que varre o banco inteiro, aberto, é
+  // convite a esgotar o banco de graça. Obrigatório porque o padrão seguro aqui
+  // não existe: um valor de fábrica num repositório público não é segredo.
+  CRON_SECRET: z.string().min(24),
   JWT_SECRET: z.string().min(16),
   WHATSAPP_PROVIDER: z.enum(['mock', 'twilio']).default('mock'),
   TWILIO_ACCOUNT_SID: z.string().optional(),
@@ -34,10 +55,12 @@ const envSchema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((v) => v === 'true'),
-  // O Render injeta RENDER_EXTERNAL_URL com a URL pública do serviço — usar como
-  // padrão evita repetir o domínio na configuração do deploy.
+  // A plataforma já sabe a URL pública do serviço; repeti-la à mão numa variável
+  // é como o QR code de um deploy de preview acaba apontando para o de produção.
+  // A Vercel injeta VERCEL_URL sem esquema (só o host), daí o https:// na frente.
   PUBLIC_BASE_URL: urlNormalizada.default(
-    process.env.RENDER_EXTERNAL_URL ?? 'http://localhost:3001'
+    process.env.RENDER_EXTERNAL_URL ??
+      (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3001')
   ),
   WEB_ORIGIN: urlNormalizada.default('http://localhost:3000'),
 });
@@ -77,6 +100,47 @@ const JWT_SECRET_DE_EXEMPLO = 'dev-secret-troque-em-producao';
 if (config.JWT_SECRET === JWT_SECRET_DE_EXEMPLO) {
   console.error(
     '[config] JWT_SECRET é o valor de exemplo, público no repositório. Gere o seu: openssl rand -base64 32'
+  );
+  process.exit(1);
+}
+
+function urlDoBanco(valor: string, nome: string): URL {
+  try {
+    return new URL(valor);
+  } catch {
+    console.error(`[config] ${nome} não é uma URL de conexão válida`);
+    process.exit(1);
+  }
+}
+
+const urlDaAplicacao = urlDoBanco(config.DATABASE_URL, 'DATABASE_URL');
+const urlDasMigrations = urlDoBanco(config.DIRECT_URL, 'DIRECT_URL');
+
+// Pooler em modo transação sem `pgbouncer=true`: o Prisma prepara um statement
+// numa conexão e tenta reusá-lo em outra, que não o conhece. O erro
+// ("prepared statement \"s0\" already exists") só aparece sob carga e some quando
+// alguém vai olhar — o formato que não se depura em produção. E a string que o
+// painel do Supabase entrega para copiar NÃO traz o parâmetro, então esquecê-lo
+// é o caminho provável, não o descuidado.
+if (urlDaAplicacao.port === '6543' && urlDaAplicacao.searchParams.get('pgbouncer') !== 'true') {
+  console.error(
+    '[config] DATABASE_URL usa a porta 6543 (pooler em modo transação) sem ?pgbouncer=true — ' +
+      'sem ele a API falha de forma intermitente sob carga, com "prepared statement already exists"'
+  );
+  process.exit(1);
+}
+
+// As duas URLs têm de ser o MESMO banco. Este é o guarda contra a divisão
+// silenciosa: migration num servidor, aplicação em outro, ambos funcionando.
+if (
+  !config.ALLOW_SPLIT_DB_HOSTS &&
+  urlDaAplicacao.hostname !== urlDasMigrations.hostname
+) {
+  console.error(
+    `[config] DATABASE_URL e DIRECT_URL apontam para servidores diferentes ` +
+      `(${urlDaAplicacao.hostname} e ${urlDasMigrations.hostname}). As migrations iriam para ` +
+      `um banco e a aplicação para outro. Se isso é intencional (conexão direta por IPv6 ` +
+      `para migrations), ligue ALLOW_SPLIT_DB_HOSTS=true.`
   );
   process.exit(1);
 }

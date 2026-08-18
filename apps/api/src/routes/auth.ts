@@ -8,7 +8,6 @@ import { ForbiddenError, UnauthorizedError } from '../errors';
 import { loginRateLimit, perdoarLogin } from '../middleware/rateLimit';
 import * as users from '../repositories/users';
 import { MAX_SHIFT_HOURS, openShiftForUser } from '../services/shift.service';
-import { runSerialized } from '../utils/keyedQueue';
 
 const router = Router();
 
@@ -31,14 +30,20 @@ router.post('/auth/login', loginRateLimit, async (req, res, next) => {
       throw new UnauthorizedError('credenciais inválidas');
     }
     const user = await users.findActiveByEmail(parsed.data.email);
-    // Uma verificação de senha por vez, e sempre a versão assíncrona. O bcryptjs
-    // é JavaScript puro: cada comparação custa dezenas de milissegundos de CPU e
-    // o `compareSync` segurava o event loop inteiro. Em paralelo é pior — 40
-    // tentativas viram segundos de CPU contínua e o webhook do Twilio, que roda
-    // neste mesmo processo, fica para trás e as mensagens dos pacientes atrasam.
-    // Na fila, cada tentativa espera a anterior e o loop respira entre elas.
-    const senhaConfere = await runSerialized('login:senha', () =>
-      bcrypt.compare(parsed.data.password, user?.passwordHash ?? HASH_ISCA)
+    // Sempre a versão assíncrona: o `compareSync` do bcryptjs, que é JavaScript
+    // puro, segura o event loop inteiro por dezenas de milissegundos e o webhook
+    // do Twilio roda neste mesmo processo.
+    //
+    // O que NÃO existe mais aqui é a fila. Serializar todas as verificações do
+    // processo numa chave só transformava um flood de login em fila de espera
+    // para quem é legítimo — a tentativa honesta ficava atrás das do atacante. E
+    // era garantia de processo, que some com uma segunda instância e não existe em
+    // serverless. Quem limita abuso é o limitador de tentativas da rota, que conta
+    // por conta e por IP real; o custo de CPU de uma comparação avulsa é o preço
+    // normal de autenticar.
+    const senhaConfere = await bcrypt.compare(
+      parsed.data.password,
+      user?.passwordHash ?? HASH_ISCA
     );
     if (!user || !senhaConfere) {
       throw new UnauthorizedError('credenciais inválidas');
