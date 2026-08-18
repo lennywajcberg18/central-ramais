@@ -8,7 +8,6 @@ import {
   Button,
   Dot,
   EmptyState,
-  ExplainCard,
   Skeleton,
   comportamentoDeRolagem,
 } from '@/components/ui';
@@ -346,26 +345,6 @@ export default function ConversaPage() {
       </header>
 
       <main className="chat-canvas flex-1 overflow-y-auto px-3 py-5 sm:px-6">
-        {/* A ajuda mora aqui, e não no cabeçalho: dentro de um h-dvh com main
-            flex-1, abri-la roubava altura das mensagens em vez de empurrá-las. */}
-        {!saiuDaLista && (
-          <div className="mx-auto mb-4 max-w-2xl">
-            <ExplainCard>
-              <ul className="list-disc space-y-1.5 pl-4">
-                <li>
-                  <strong>Resposta automática</strong>: o sistema mandou sozinho, sem atendente.
-                </li>
-                <li>
-                  Se a pessoa escrever <strong>MENU</strong>, ela volta à lista de setores que o link
-                  dela permite.
-                </li>
-                <li>Sem mensagem nova por 30 minutos, a conversa encerra sozinha.</li>
-                <li>Ao encerrar, a pessoa recebe a pesquisa de satisfação.</li>
-              </ul>
-            </ExplainCard>
-          </div>
-        )}
-
         {/* região viva vazia desde o começo: se ela nascesse com o histórico
             dentro, o leitor de tela poderia despejar a conversa inteira */}
         <p aria-live="polite" className="sr-only">

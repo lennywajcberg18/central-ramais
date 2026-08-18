@@ -7,7 +7,6 @@ import {
   Badge,
   Button,
   EmptyState,
-  ExplainCard,
   Field,
   PageHeader,
   Panel,
@@ -541,19 +540,6 @@ export default function ContatosPage() {
           </Button>
         }
       />
-
-      <div className="mb-4">
-        <ExplainCard>
-          <ul className="list-disc space-y-1.5 pl-4">
-            <li>Cada linha é um telefone que já escreveu para o hospital.</li>
-            <li>
-              Ele fica amarrado ao link de acesso que usou na primeira mensagem — por isso revogar o
-              link corta o acesso na hora.
-            </li>
-            <li>Bloquear é silêncio total: a pessoa escreve e nunca recebe resposta.</li>
-          </ul>
-        </ExplainCard>
-      </div>
 
       <Panel>
         <div className="flex flex-col gap-3 border-b border-ink-100 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">

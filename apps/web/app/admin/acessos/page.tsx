@@ -7,7 +7,6 @@ import {
   Button,
   Dot,
   EmptyState,
-  ExplainCard,
   Field,
   PageHeader,
   Panel,
@@ -261,20 +260,6 @@ export default function AcessosPage() {
           </div>
         }
       />
-
-      <ExplainCard>
-        <ul className="list-disc space-y-1.5 pl-4">
-          <li>
-            Cada linha é uma mensagem recusada: sem link de acesso, com código errado ou com link já
-            encerrado.
-          </li>
-          <li>
-            &ldquo;Link pessoal repassado&rdquo; é o motivo grave: esse link vale para um número só,
-            e outro número tentou usar.
-          </li>
-          <li>Quando isso aparecer, encerre o link e emita um novo para a pessoa certa.</li>
-        </ul>
-      </ExplainCard>
 
       {blocked ? null : !ready ? (
         <div className="grid gap-2 sm:grid-cols-3 xl:grid-cols-5">
