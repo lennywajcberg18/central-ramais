@@ -15,9 +15,9 @@ import webhookRouter from './routes/webhook';
 export function createApp() {
   const app = express();
 
-  // Atrás do proxy do Render a requisição chega como http; sem isto a validação
-  // de assinatura do Twilio remonta a URL errada e rejeita webhook legítimo.
-  // É `1` e não `true` porque o Render é um salto só: com `true` o Express
+  // Atrás do proxy da plataforma a requisição chega como http; sem isto a
+  // validação de assinatura do Twilio remonta a URL errada e rejeita webhook
+  // legítimo. É `1` e não `true` porque é um salto só: com `true` o Express
   // acredita no X-Forwarded-For inteiro e resolve `req.ip` como a entrada mais à
   // ESQUERDA, que é dado do cliente — o limite de tentativas de login virava
   // decorativo, bastava incrementar um número no header. Com 1 salto, `req.ip` é
@@ -27,11 +27,13 @@ export function createApp() {
 
   app.use(cors({ origin: config.WEB_ORIGIN }));
 
-  // É o healthCheckPath do render.yaml: é com ele que o Render decide promover um
-  // deploy e se o serviço ainda está de pé. Um 200 que não toca dependência nenhuma
-  // deixa o painel verde com o Postgres fora do ar — nada reinicia, nada faz
-  // rollback, e toda requisição de atendente devolve 500 até alguém ligar
-  // reclamando. O SELECT 1 é o que transforma "processo vivo" em "serviço útil".
+  // A pergunta que este endpoint responde é "o serviço está útil?", não "o
+  // processo subiu?". Um 200 que não toca dependência nenhuma fica verde com o
+  // Postgres fora do ar, e toda requisição de atendente devolve 500 até alguém
+  // ligar reclamando. O SELECT 1 é o que separa as duas perguntas.
+  //
+  // É também o primeiro lugar onde o projeto free do Supabase pausado aparece:
+  // pausado, ele recusa conexão e aqui sai 503.
   // Fica no app e não numa camada nova: é uma linha de SQL, não regra de negócio.
   app.get('/health', async (_req, res) => {
     try {
@@ -39,7 +41,7 @@ export function createApp() {
       res.json({ ok: true, db: 'up' });
     } catch (err) {
       console.error('[health] banco inalcançável:', err);
-      res.status(503).json({ ok: false, db: 'down' }); // 503 é o que faz o Render agir
+      res.status(503).json({ ok: false, db: 'down' });
     }
   });
 

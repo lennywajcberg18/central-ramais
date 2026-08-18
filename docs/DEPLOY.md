@@ -61,8 +61,17 @@ degrada: uma expressão mais frequente faz o deploy **falhar**.
 O agendamento fica no Supabase, com `pg_cron` chamando os endpoints por `pg_net`.
 Sai de graça, tem granularidade de minuto, e põe o relógio ao lado dos dados.
 
-As extensões já estão habilitadas neste projeto. Com a URL da API em mãos, rode
-isto uma vez no SQL Editor, trocando os dois valores:
+As extensões já estão habilitadas neste projeto, e o agendamento é um script do
+repositório em vez de um trecho de SQL solto — ele é idempotente, então rodar de
+novo é como se troca a URL ou o segredo:
+
+```bash
+cd apps/api
+set -a && . ./.env.supabase && set +a
+PUBLIC_BASE_URL=https://central-ramais-api.vercel.app npm run cron:agendar
+```
+
+Por baixo, o que ele agenda é isto:
 
 ```sql
 select cron.schedule('varredura-inatividade', '* * * * *', $$
@@ -80,13 +89,23 @@ select cron.schedule('varredura-plantao', '* * * * *', $$
 $$);
 ```
 
-Conferir depois:
+Conferir que está mesmo disparando — agendamento que não roda é pior que nenhum,
+porque parece resolvido:
 
 ```sql
-select jobid, jobname, schedule, active from cron.job;
-select jobid, status, return_message, start_time
-  from cron.job_run_details order by start_time desc limit 10;
+select jobname, schedule, active from cron.job;
+
+-- o que o cron executou
+select j.jobname, d.status, d.start_time
+  from cron.job_run_details d join cron.job j on j.jobid = d.jobid
+ order by d.start_time desc limit 10;
+
+-- e o que a API respondeu de volta
+select status_code, created from net._http_response order by created desc limit 10;
 ```
+
+Medido na primeira execução: `succeeded` nos dois jobs e `HTTP 200` nas duas
+respostas.
 
 O segredo fica na tabela `cron.job`, legível só pelo `postgres` — nunca no
 repositório. Para trocá-lo, `cron.unschedule('varredura-inatividade')` e agende
@@ -128,7 +147,8 @@ depende de haver um processo só não é garantia, é sorte com prazo.
    `NEXT_PUBLIC_API_URL` apontando para a API. Deploy.
 5. Volte na API e ajuste `WEB_ORIGIN` para a URL do web. Redeploy — sem isso o
    CORS barra o front inteiro e o sintoma é "clico em Entrar e não acontece nada".
-6. Agende os dois `cron.schedule` acima.
+6. Agende as varreduras: `npm run cron:agendar -w api`, com `PUBLIC_BASE_URL`
+   apontando para a API.
 7. Confira que a API **não** está publicada onde não deve:
    ```bash
    curl -s -o /dev/null -w "%{http_code}\n" -X POST https://SUA-API.vercel.app/jobs/timeout

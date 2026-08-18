@@ -19,12 +19,12 @@ const urlNormalizada = z
 const envSchema = z.object({
   DATABASE_URL: z.string().min(1),
   // Quem lê a DIRECT_URL é o `prisma migrate`, não o processo que está subindo.
-  // Ela é exigida no boot mesmo assim, por causa de como o Render se comporta:
-  // trocar `fromDatabase` por `sync: false` no blueprint NÃO apaga o valor que o
-  // serviço já guardava. Um painel preenchido pela metade produz o pior resultado
-  // possível — as migrations vão para o banco novo, a aplicação continua lendo e
-  // escrevendo no antigo, e não há erro nenhum para denunciar isso até alguém
-  // reparar meses depois que os dados se dividiram em dois.
+  // Ela é exigida no boot mesmo assim, para que um painel preenchido pela metade
+  // falhe alto. Sem isso o resultado é o pior possível: as migrations vão para o
+  // banco novo, a aplicação continua lendo e escrevendo no antigo, e não há erro
+  // nenhum para denunciar isso até alguém reparar, meses depois, que os dados se
+  // dividiram em dois. Aconteceu de verdade na saída do Render, onde trocar a
+  // origem da variável no blueprint não apagou o valor que o serviço já guardava.
   DIRECT_URL: z.string().min(1),
   // Escape para quem tem IPv6 de verdade: aí a DIRECT_URL pode ser a conexão
   // direta (db.<ref>.supabase.co) enquanto a aplicação fica no pooler, e os dois
@@ -59,8 +59,7 @@ const envSchema = z.object({
   // é como o QR code de um deploy de preview acaba apontando para o de produção.
   // A Vercel injeta VERCEL_URL sem esquema (só o host), daí o https:// na frente.
   PUBLIC_BASE_URL: urlNormalizada.default(
-    process.env.RENDER_EXTERNAL_URL ??
-      (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3001')
+    process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3001'
   ),
   WEB_ORIGIN: urlNormalizada.default('http://localhost:3000'),
 });
