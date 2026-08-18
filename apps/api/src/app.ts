@@ -9,6 +9,7 @@ import agentRouter from './routes/agent';
 import authRouter from './routes/auth';
 import publicRouter from './routes/public';
 import simulatorRouter from './routes/simulator';
+import jobsRouter from './routes/jobs';
 import webhookRouter from './routes/webhook';
 
 export function createApp() {
@@ -49,6 +50,7 @@ export function createApp() {
 
   app.use(express.json());
 
+  app.use(jobsRouter);
   app.use(authRouter);
   app.use(agentRouter);
   app.use(adminRouter);

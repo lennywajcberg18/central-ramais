@@ -1,5 +1,11 @@
 generator client {
   provider = "prisma-client-js"
+  // A Vercel roda as funções em Amazon Linux com OpenSSL 3, e o Prisma escolhe o
+  // motor de query pelo sistema onde o `generate` rodou. Sem declarar o alvo, o
+  // build gera só o binário da máquina que buildou e a função quebra no primeiro
+  // acesso ao banco, com "Query engine library for current platform could not be
+  // found" — em runtime, não no build.
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
 }
 
 // `url` e `directUrl` apontam para o MESMO banco por caminhos diferentes, e a

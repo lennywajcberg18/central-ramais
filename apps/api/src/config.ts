@@ -35,6 +35,11 @@ const envSchema = z.object({
     .default('false')
     .transform((v) => v === 'true'),
   PORT: z.coerce.number().default(3001),
+  // Segredo do agendador. Sem processo vivo entre requisições, as varreduras
+  // viram endpoints HTTP — e endpoint que varre o banco inteiro, aberto, é
+  // convite a esgotar o banco de graça. Obrigatório porque o padrão seguro aqui
+  // não existe: um valor de fábrica num repositório público não é segredo.
+  CRON_SECRET: z.string().min(24),
   JWT_SECRET: z.string().min(16),
   WHATSAPP_PROVIDER: z.enum(['mock', 'twilio']).default('mock'),
   TWILIO_ACCOUNT_SID: z.string().optional(),
