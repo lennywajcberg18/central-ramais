@@ -36,6 +36,10 @@ export interface InboundMessage {
   messageSid: string;
   // NumMedia do Twilio: >0 quando veio foto, áudio ou documento junto
   numMedia?: number;
+  // Veio do simulador de demonstração, não de um celular. Marca o contato, e a
+  // marca é o que impede qualquer envio futuro para ele de sair de verdade —
+  // inclusive a resposta do atendente pelo painel, dias depois.
+  simulado?: boolean;
 }
 
 export async function handleInbound(msg: InboundMessage): Promise<void> {
@@ -110,7 +114,7 @@ async function dispatchInbound(
   }
 
   if (access.outcome === 'denied') {
-    await sendLooseText(whatsappNumber.phoneNumber, waNumber, MSG_NOT_IDENTIFIED);
+    await sendLooseText(tenantId, whatsappNumber.phoneNumber, waNumber, MSG_NOT_IDENTIFIED);
     return;
   }
 
@@ -119,12 +123,20 @@ async function dispatchInbound(
     if (active) {
       await closeConversation(tenantId, active.id, 'access_revoked');
     }
-    await sendLooseText(whatsappNumber.phoneNumber, waNumber, MSG_ACCESS_REVOKED);
+    await sendLooseText(tenantId, whatsappNumber.phoneNumber, waNumber, MSG_ACCESS_REVOKED);
     return;
   }
 
   const { contact, link } = access;
   await externalContacts.touchLastSeen(tenantId, contact.id);
+
+  // Antes de qualquer envio. Um contato que entrou pelo simulador fica marcado
+  // para sempre: a conversa dele pode ser encaminhada, encerrada e receber a
+  // pergunta de nota semanas depois, e nada disso pode virar WhatsApp de verdade.
+  if (msg.simulado && !contact.simulated) {
+    await externalContacts.marcarComoSimulado(tenantId, contact.id);
+    contact.simulated = true;
+  }
 
   const ctx: InboundContext = { tenantId, whatsappNumber, contact, link, waNumber };
 

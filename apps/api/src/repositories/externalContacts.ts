@@ -113,3 +113,21 @@ export function countByLink(tenantId: string) {
     _count: { id: true },
   });
 }
+
+// Consultado a cada envio. É uma ida ao banco por mensagem que sai, e vale: o
+// alternativo era passar a informação por dezoito pontos de chamada, e uma trava
+// que depende de dezoito lembretes já nasce quebrada.
+export async function ehSimulado(tenantId: string, waNumber: string): Promise<boolean> {
+  const c = await prisma.externalContact.findFirst({
+    where: { tenantId, waNumber },
+    select: { simulated: true },
+  });
+  return c?.simulated ?? false;
+}
+
+export function marcarComoSimulado(tenantId: string, id: string) {
+  return prisma.externalContact.updateMany({
+    where: { tenantId, id, simulated: false },
+    data: { simulated: true },
+  });
+}

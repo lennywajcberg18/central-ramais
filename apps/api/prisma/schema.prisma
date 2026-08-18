@@ -315,6 +315,9 @@ model ExternalContact {
   waNumber    String   @map("wa_number")
   entryLinkId String   @map("entry_link_id")
   blocked     Boolean  @default(false)
+  // Contato criado pelo simulador de demonstração. Nada é enviado de verdade
+  // para ele — ver a migration 20260818210000_contato_simulado.
+  simulated   Boolean  @default(false)
   firstSeenAt DateTime @default(now()) @map("first_seen_at")
   lastSeenAt  DateTime @default(now()) @map("last_seen_at")
 
@@ -324,6 +327,7 @@ model ExternalContact {
 
   @@unique([tenantId, waNumber])
   @@index([tenantId, entryLinkId])
+  @@index([tenantId, waNumber, simulated], map: "external_contacts_simulated_idx")
   @@map("external_contacts")
 }
 

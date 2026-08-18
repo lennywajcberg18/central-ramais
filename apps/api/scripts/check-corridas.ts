@@ -28,6 +28,9 @@ import {
 import { tryAssign } from '../src/services/routing.service';
 import { closeConversation } from '../src/services/conversation.service';
 import * as externalContacts from '../src/repositories/externalContacts';
+import { recusarSeEnvioForReal } from './guarda';
+
+recusarSeEnvioForReal('check-corridas');
 
 const RODADAS = 6;
 

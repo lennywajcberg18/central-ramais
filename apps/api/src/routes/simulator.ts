@@ -48,6 +48,9 @@ router.post('/admin/simulator/inbound', async (req, res, next) => {
       to: setup.whatsappNumber,
       body: parsed.data.body,
       messageSid: `SIM${randomUUID()}`,
+      // O que impede a demonstração de mandar WhatsApp para o número que o admin
+      // digitou — que é inventado, e pode ser de alguém.
+      simulado: true,
     });
 
     res.status(202).json({ ok: true });
