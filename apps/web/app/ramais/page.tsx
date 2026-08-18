@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { FormEvent, useCallback, useEffect, useState } from 'react';
 import AgentHeader from '@/components/AgentHeader';
 import AgentNav from '@/components/AgentNav';
-import { Button, EmptyState, ExplainCard, Panel, Skeleton, inputClass } from '@/components/ui';
+import { Button, EmptyState, Panel, Skeleton, inputClass } from '@/components/ui';
 import { api, getSessionUser } from '@/lib/api';
 
 interface DepartmentRow {
@@ -139,14 +139,6 @@ export default function RamaisPage() {
             </Button>
           )}
         </div>
-
-        <ExplainCard>
-          <ul className="list-disc space-y-1 pl-4">
-            <li>A conversa é do <strong>setor</strong>, não da pessoa: quem entrar no plantão continua de onde parou.</li>
-            <li>Serve para o que hoje vira ligação de ramal — pedir uma guia, avisar de um leito, cobrar um exame.</li>
-            <li>Nada aqui chega ao WhatsApp de quem é de fora.</li>
-          </ul>
-        </ExplainCard>
 
         {compondo && (
           <Panel title="Chamar outro setor">

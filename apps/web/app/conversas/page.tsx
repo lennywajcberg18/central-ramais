@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import AgentHeader from '@/components/AgentHeader';
 import AgentNav from '@/components/AgentNav';
-import { Badge, Button, Dot, EmptyState, ExplainCard, Panel, Skeleton } from '@/components/ui';
+import { Badge, Button, Dot, EmptyState, Panel, Skeleton } from '@/components/ui';
 import { api, ApiError, getSessionUser } from '@/lib/api';
 import { CONVERSATION_STATUS, formatPhone, relativeTime } from '@/lib/labels';
 
@@ -286,20 +286,6 @@ export default function ConversasPage() {
             Quem escreve de fora do hospital pelo WhatsApp aparece aqui.
           </p>
         </div>
-
-        <ExplainCard>
-          <ul className="list-disc space-y-1 pl-4">
-            <li>
-              A etiqueta diz a situação: esperando atendente, escolhendo o setor, em atendimento
-              ou encerrada.
-            </li>
-            <li>
-              Fica esperando quando nenhum atendente do setor está disponível. O sistema entrega
-              sozinho assim que alguém fica.
-            </li>
-            <li>A lista se atualiza sozinha a cada 5 segundos.</li>
-          </ul>
-        </ExplainCard>
 
         {error && (
           <div

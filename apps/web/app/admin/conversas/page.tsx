@@ -7,7 +7,6 @@ import {
   Button,
   Dot,
   EmptyState,
-  ExplainCard,
   PageHeader,
   Panel,
   Skeleton,
@@ -157,23 +156,6 @@ export default function AdminConversasPage() {
           </Button>
         }
       />
-
-      <ExplainCard>
-        <ul className="list-disc space-y-1 pl-4">
-          <li>
-            Quem atende só enxerga a fila dos setores dele. Esta tela é a visão do hospital
-            inteiro, inclusive dos atendimentos já encerrados.
-          </li>
-          <li>
-            <span className="font-medium">Esperando atendente</span> é a fila: a pessoa já escolheu
-            o setor e ninguém assumiu ainda.
-          </li>
-          <li>
-            Cada conversa guarda o nome do link de acesso usado, mesmo que o link seja renomeado ou
-            revogado depois.
-          </li>
-        </ul>
-      </ExplainCard>
 
       <div className="flex flex-wrap gap-2" role="group" aria-label="Filtrar por situação">
         {FILTROS.map((f) => (

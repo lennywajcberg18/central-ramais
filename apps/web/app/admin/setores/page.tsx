@@ -7,7 +7,6 @@ import {
   Button,
   Dot,
   EmptyState,
-  ExplainCard,
   Field,
   PageHeader,
   Panel,
@@ -459,22 +458,6 @@ export default function SetoresPage() {
           ) : undefined
         }
       />
-
-      <ExplainCard>
-        <ul className="list-disc space-y-1.5 pl-4">
-          <li>Setor é o destino da conversa: Recepção, Internação, Faturamento.</li>
-          <li>
-            O número que a pessoa digita vem do link de acesso dela, não desta lista. Cada link
-            mostra só os setores que libera, numerados de <span className="tabular">1</span> em
-            diante — o mesmo setor pode ser <span className="tabular">2</span> em um link e{' '}
-            <span className="tabular">3</span> em outro.
-          </li>
-          <li>
-            A ordem aqui define a sequência do menu; empate desempata pelo alfabeto. Setor
-            desativado não entra no menu de nenhum link.
-          </li>
-        </ul>
-      </ExplainCard>
 
       <Panel title="Novo setor">
         <form onSubmit={criarSetor} noValidate className="space-y-5 px-5 py-5">

@@ -6,7 +6,6 @@ import {
   Badge,
   Button,
   EmptyState,
-  ExplainCard,
   Field,
   PageHeader,
   Panel,
@@ -445,19 +444,6 @@ export default function LinksPage() {
           ) : undefined
         }
       />
-
-      <div className="mb-8">
-        <ExplainCard>
-          <ul className="list-disc space-y-1.5 pl-4">
-            <li>O link define quais setores a pessoa enxerga. Nenhum outro aparece para ela.</li>
-            <li>
-              <strong className="font-medium text-ink-800">Perfil</strong> vale para várias pessoas;{' '}
-              <strong className="font-medium text-ink-800">Pessoal</strong> vale para um número só.
-            </li>
-            <li>Revogar corta o acesso — inclusive de quem já conversou antes.</li>
-          </ul>
-        </ExplainCard>
-      </div>
 
       <Panel title="Criar link de acesso" className="mb-8">
         <form onSubmit={createLink} className="space-y-6 p-5">

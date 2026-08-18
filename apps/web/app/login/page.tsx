@@ -3,7 +3,7 @@
 import { useRouter } from 'next/navigation';
 import { FormEvent, useEffect, useState } from 'react';
 import { ApiError, api, saveSession, SessionUser } from '@/lib/api';
-import { Button, ExplainCard, Field, inputClass } from '@/components/ui';
+import { Button, Field, inputClass } from '@/components/ui';
 
 const ICON_PROPS = {
   viewBox: '0 0 24 24',
@@ -194,16 +194,6 @@ export default function LoginPage() {
           <p className="mt-1.5 text-sm leading-relaxed text-ink-500">
             Use o e-mail que o hospital cadastrou para você.
           </p>
-
-          <div className="mt-5">
-            <ExplainCard>
-              <ul className="list-disc space-y-1.5 pl-4">
-                <li>Esta tela é da equipe. Quem é de fora entra pelo link de acesso, no WhatsApp.</li>
-                <li>Administrador cuida de setores e links. Atendente responde as conversas.</li>
-                <li>Cada hospital é separado: um nunca vê os dados do outro.</li>
-              </ul>
-            </ExplainCard>
-          </div>
 
           {aviso && (
             <p

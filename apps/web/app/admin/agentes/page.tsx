@@ -7,7 +7,6 @@ import {
   Button,
   Dot,
   EmptyState,
-  ExplainCard,
   Field,
   PageHeader,
   Panel,
@@ -751,14 +750,6 @@ export default function AgentesPage() {
         title="Atendentes"
         description="Quem responde as conversas do hospital pelo WhatsApp."
       />
-
-      <ExplainCard>
-        <ul className="list-disc space-y-1.5 pl-5">
-          <li>O setor da pessoa define quais conversas chegam para ela. Sem setor, nada chega.</li>
-          <li>Disponível ou Ausente quem muda é o próprio atendente, pelo app. Aqui você só vê.</li>
-          <li>Desativar tira o acesso ao sistema. O histórico continua nos relatórios.</li>
-        </ul>
-      </ExplainCard>
 
       {notice && <Notice>{notice}</Notice>}
 

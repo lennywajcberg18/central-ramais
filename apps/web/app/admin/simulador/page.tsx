@@ -4,7 +4,6 @@ import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import {
   Badge,
   Button,
-  ExplainCard,
   Panel,
   PageHeader,
   Skeleton,
@@ -282,15 +281,6 @@ export default function SimuladorPage() {
           </div>
         }
       />
-
-      <ExplainCard>
-        <ul className="list-disc space-y-1 pl-4">
-          <li>A mensagem percorre o mesmo caminho de uma mensagem real — nada sai para a operadora.</li>
-          <li>O link de acesso decide quais setores a pessoa vê no menu.</li>
-          <li>O código entre colchetes só vale na primeira mensagem; depois o telefone já fica vinculado ao link.</li>
-          <li>Quem escreve sem link é recusado, e a tentativa aparece em Acessos negados.</li>
-        </ul>
-      </ExplainCard>
 
       {erro && (
         <p
