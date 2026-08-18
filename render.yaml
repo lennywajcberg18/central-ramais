@@ -1,7 +1,17 @@
-# Blueprint do Render — sobe banco, API e web em um clique.
-# Plano free em todos os três: os serviços hibernam após 15 min sem acesso e
-# o Postgres gratuito expira em 30 dias. Serve para demonstração, não para uso real.
+# Blueprint do Render — sobe API e web em um clique. O banco não vem daqui: é um
+# projeto Supabase em São Paulo, e as duas variáveis que apontam para ele entram
+# na mão no painel (ver `docs/BANCO.md`).
+# Plano free nos dois serviços: hibernam após 15 min sem acesso, e a primeira
+# visita depois disso leva ~50s. O projeto do Supabase, também free, pausa após
+# 7 dias sem atividade — pausado, ele recusa conexão e o /health responde 503.
+# Serve para demonstração, não para uso real.
 
+# Este Postgres não é mais o banco da aplicação — ela fala com o Supabase
+# (projeto central-ramais, região São Paulo). O bloco continua aqui de propósito:
+# apagá-lo do blueprint faz o Render descartar a instância, e um banco descartado
+# não volta. Ele expira sozinho em 13/09/2026; até lá é só peso morto, e serve de
+# rede se a migração precisar ser desfeita. Depois de confirmar o Supabase em uso,
+# dá para removê-lo pelo painel.
 databases:
   - name: central-ramais-db
     databaseName: central_ramais
@@ -32,10 +42,19 @@ services:
     envVars:
       - key: NODE_VERSION
         value: '22'
+      # As duas apontam para o MESMO banco do Supabase por caminhos diferentes, e
+      # nenhuma delas pode ser a conexão direta: `db.<ref>.supabase.co` só tem
+      # registro IPv6, e a rede do Render é IPv4 — de dentro daqui ela simplesmente
+      # não existe. Ficam ambas no pooler, em modos diferentes:
+      #   DATABASE_URL  → porta 6543, modo transação, com ?pgbouncer=true
+      #   DIRECT_URL    → porta 5432, modo sessão (o `prisma migrate deploy` do
+      #                   startCommand precisa da mesma conexão do início ao fim)
+      # `sync: false` porque carregam a senha do banco, e este arquivo é versionado
+      # num repositório público. Os valores entram pelo painel do Render.
       - key: DATABASE_URL
-        fromDatabase:
-          name: central-ramais-db
-          property: connectionString
+        sync: false
+      - key: DIRECT_URL
+        sync: false
       - key: JWT_SECRET
         generateValue: true
       - key: WHATSAPP_PROVIDER

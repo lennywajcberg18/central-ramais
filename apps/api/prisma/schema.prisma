@@ -2,9 +2,18 @@ generator client {
   provider = "prisma-client-js"
 }
 
+// `url` e `directUrl` apontam para o MESMO banco por caminhos diferentes, e a
+// separação não é preferência: o runtime entra pelo pooler em modo transação
+// (porta 6543), que multiplexa conexões e não guarda estado entre um comando e o
+// seguinte — exatamente o que uma função serverless precisa, e exatamente o que
+// uma migration não pode aceitar, porque `CREATE INDEX` e `ALTER TABLE` dependem
+// da mesma sessão do início ao fim. O `directUrl` (porta 5432, modo sessão) é por
+// onde o `prisma migrate` passa. Sem ele a migration quebra no meio e deixa o
+// schema pela metade.
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 enum Role {
