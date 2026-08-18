@@ -8,6 +8,13 @@ export const MSG_ACCESS_REVOKED = 'Seu acesso foi encerrado. Procure o hospital.
 export const MSG_NO_DEPARTMENTS =
   'Nenhum setor disponível no momento. Tente novamente mais tarde.';
 
+// Anexo (foto do laudo, áudio) chega com Body vazio. Sem estes dois textos o
+// atendente via bolha em branco e quem mandou achava que o arquivo tinha chegado.
+export const MSG_ONLY_TEXT =
+  'Por aqui só conseguimos ler mensagens de texto. Pode escrever, por favor?';
+
+export const MSG_ATTACHMENT_BODY = '[a pessoa enviou um anexo — este canal só lê texto]';
+
 export function buildMenuText(departments: Department[]): string {
   const lines = departments.map((d, i) => `${i + 1} — ${d.name}`);
   return `Olá! Com quem deseja falar?\n${lines.join('\n')}\n\nDigite o número da opção.`;

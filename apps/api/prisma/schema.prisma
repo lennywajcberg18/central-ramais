@@ -362,6 +362,19 @@ model Conversation {
   @@index([tenantId, status, lastMessageAt])
   @@index([tenantId, entryLinkId])
   @@index([tenantId, createdAt])
+  // O rodízio pergunta "quando cada atendente recebeu a última conversa" a cada
+  // atribuição, dentro da fila serializada do setor: sem este índice é Seq Scan
+  // na tabela inteira e o ramal para de distribuir enquanto varre.
+  @@index([tenantId, assignedUserId, assignedAt])
+  // A lista do gestor com `situacao=todas` não filtra status, então o índice
+  // acima com status não serve para o ORDER BY last_message_at.
+  @@index([tenantId, lastMessageAt])
+  // Existe ainda um índice único PARCIAL em (tenant_id, external_contact_id)
+  // restrito aos status ativos — "uma conversa aberta por contato". O Prisma não
+  // modela índice parcial, então ele vive só no SQL da migration
+  // 20260817170100_conversa_ativa_unica e aparece como drift no `migrate dev`.
+  // Não o remova do banco: sem ele dois processos abrem duas conversas para o
+  // mesmo número e o contato recebe dois menus.
   @@map("conversations")
 }
 

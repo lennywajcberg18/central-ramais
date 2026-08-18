@@ -1,7 +1,16 @@
 'use client';
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
-import { Badge, Button, ExplainCard, Panel, PageHeader, Skeleton, inputClass } from '@/components/ui';
+import {
+  Badge,
+  Button,
+  ExplainCard,
+  Panel,
+  PageHeader,
+  Skeleton,
+  comportamentoDeRolagem,
+  inputClass,
+} from '@/components/ui';
 import { LINK_KIND, formatPhone } from '@/lib/labels';
 import { api } from '@/lib/api';
 
@@ -202,7 +211,7 @@ export default function SimuladorPage() {
   }, [carregar]);
 
   useEffect(() => {
-    fim.current?.scrollIntoView({ behavior: 'smooth' });
+    fim.current?.scrollIntoView({ behavior: comportamentoDeRolagem() });
   }, [entries.length]);
 
   async function enviar(texto: string) {

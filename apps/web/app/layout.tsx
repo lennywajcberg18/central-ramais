@@ -9,7 +9,11 @@ const jakarta = Plus_Jakarta_Sans({
 });
 
 export const metadata: Metadata = {
-  title: 'Central de Ramais',
+  // O Next anuncia a troca de rota pelo título do documento. Com um título só para
+  // o app inteiro, quem usa leitor de tela vai de Atendimento para Ramais sem
+  // nenhuma confirmação de que a página mudou — daí o template, preenchido pelo
+  // layout de cada segmento.
+  title: { default: 'Central de Ramais', template: '%s · Central de Ramais' },
   description:
     'O hospital decide quem, de fora, fala com cada setor pelo WhatsApp — sem expor número de ninguém.',
   icons: {

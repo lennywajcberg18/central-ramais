@@ -1,13 +1,27 @@
 node_modules/
 dist/
 .next/
-.env
 *.tsbuildinfo
 .DS_Store
 
-# logs de dev
-*-dev.log
+# Segredos. Nome exato não basta: .env.local é a convenção do Next (apps/web) e
+# .env.production aparece no primeiro deploy de verdade. Repositório público —
+# um TWILIO_AUTH_TOKEN ou uma DATABASE_URL commitados são achados por bots em
+# minutos e não têm desfazer. `!.env.example` preserva o template versionado.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
 
-# guia pessoal de demonstração, fora da entrega
+# logs — qualquer nome, não só os do `npm run dev`
+*.log
+
+# material pessoal / de reunião, fora da entrega. O projeto não versiona PDF
+# nenhum, então o glob é seguro; exceção futura entra com `git add -f`.
+*.pdf
 ESTUDO.md
-ESTUDO.pdf
+
+# saída do Playwright MCP
+.playwright-mcp/

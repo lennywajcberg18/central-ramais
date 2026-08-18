@@ -1,6 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useDialogoModal } from '@/components/ConfirmDialog';
 import {
   Badge,
   Button,
@@ -72,29 +73,76 @@ export default function AdminConversasPage() {
   const [erro, setErro] = useState<string | null>(null);
   const [aberta, setAberta] = useState<Detail | null>(null);
   const [carregandoDetalhe, setCarregandoDetalhe] = useState(false);
+  const [lidoEm, setLidoEm] = useState<string | null>(null);
+
+  // Com leitura automática há sempre mais de uma requisição em voo: se o gestor
+  // troca de filtro no meio de uma, a resposta antiga chega depois e repinta a
+  // lista com o filtro errado.
+  const requisicao = useRef(0);
+  // mesmo mecanismo da lista, agora para o detalhe: sem ele, o gestor que abriu
+  // a linha errada e fechou vê a gaveta reabrir sozinha quando a resposta chega
+  const requisicaoDetalhe = useRef(0);
+  const gaveta = useRef<HTMLElement>(null);
+  const origemDoFoco = useRef<HTMLElement | null>(null);
 
   const carregar = useCallback(async () => {
+    const daVez = ++requisicao.current;
     setErro(null);
     try {
-      setRows(await api<Row[]>(`/admin/conversations?situacao=${situacao}`));
+      const dados = await api<Row[]>(`/admin/conversations?situacao=${situacao}`);
+      if (daVez !== requisicao.current) return;
+      setRows(dados);
+      setLidoEm(new Date().toISOString());
     } catch (err) {
+      if (daVez !== requisicao.current) return;
       setErro(err instanceof Error ? err.message : 'não foi possível carregar');
     }
   }, [situacao]);
 
   useEffect(() => {
     setRows(null);
+    setLidoEm(null);
     carregar();
+    // A tela de quem gerencia fica aberta o dia inteiro. Sem releitura, o gestor
+    // olha uma fila lida de manhã, vê vazio e diz que está tudo certo.
+    const intervalo = setInterval(carregar, 10000);
+    return () => clearInterval(intervalo);
   }, [carregar]);
 
-  async function abrir(id: string) {
+  const gavetaAberta = aberta !== null || carregandoDetalhe;
+
+  // Fechar tem que valer também durante o carregamento: enquanto a promise não
+  // volta, `aberta` ainda é null e limpar só ela não desiste de nada — a gaveta
+  // reabria segundos depois com o histórico que o gestor já tinha dispensado.
+  const fechar = useCallback(() => {
+    requisicaoDetalhe.current += 1;
+    setAberta(null);
+    setCarregandoDetalhe(false);
+  }, []);
+
+  // A gaveta se anuncia como `aria-modal`, então precisa se comportar como uma:
+  // sem trava de Tab, dois Tabs levavam o foco para a navegação lateral, atrás
+  // da máscara, enquanto o leitor de tela dizia que o resto da página não existe.
+  useDialogoModal(gavetaAberta, gaveta, fechar, origemDoFoco);
+
+  useEffect(() => {
+    if (!gavetaAberta) return;
+    gaveta.current?.focus();
+  }, [gavetaAberta]);
+
+  async function abrir(id: string, origem: HTMLElement) {
+    const daVez = ++requisicaoDetalhe.current;
+    origemDoFoco.current = origem;
     setCarregandoDetalhe(true);
     try {
-      setAberta(await api<Detail>(`/admin/conversations/${id}/messages`));
+      const detalhe = await api<Detail>(`/admin/conversations/${id}/messages`);
+      if (daVez !== requisicaoDetalhe.current) return;
+      setAberta(detalhe);
     } catch (err) {
+      if (daVez !== requisicaoDetalhe.current) return;
       setErro(err instanceof Error ? err.message : 'não foi possível abrir a conversa');
     } finally {
-      setCarregandoDetalhe(false);
+      if (daVez === requisicaoDetalhe.current) setCarregandoDetalhe(false);
     }
   }
 
@@ -162,7 +210,7 @@ export default function AdminConversasPage() {
             {rows.map((c) => (
               <li key={c.id}>
                 <button
-                  onClick={() => abrir(c.id)}
+                  onClick={(e) => abrir(c.id, e.currentTarget)}
                   className="flex w-full flex-wrap items-center gap-x-4 gap-y-2 px-5 py-3 text-left hover:bg-ink-50"
                 >
                   <span className="min-w-[12rem] flex-1">
@@ -190,13 +238,30 @@ export default function AdminConversasPage() {
         )}
       </Panel>
 
-      {(aberta || carregandoDetalhe) && (
+      {lidoEm && (
+        <footer className="px-1 text-xs text-ink-400">
+          <time
+            dateTime={lidoEm}
+            className="tabular"
+            title="A lista se atualiza sozinha a cada 10 segundos"
+          >
+            atualizada {relativeTime(lidoEm)}
+          </time>
+        </footer>
+      )}
+
+      {gavetaAberta && (
         <div
           className="fixed inset-0 z-30 flex justify-end bg-ink-900/30"
-          onClick={() => setAberta(null)}
+          onClick={fechar}
         >
           <aside
-            className="flex h-full w-full max-w-lg flex-col bg-white shadow-[var(--shadow-lift)]"
+            ref={gaveta}
+            tabIndex={-1}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Histórico da conversa"
+            className="flex h-full w-full max-w-lg flex-col bg-white shadow-[var(--shadow-lift)] outline-none"
             onClick={(e) => e.stopPropagation()}
           >
             {carregandoDetalhe || !aberta ? (
@@ -217,7 +282,7 @@ export default function AdminConversasPage() {
                         {aberta.conversation.departmentName ?? 'sem setor'}
                       </p>
                     </div>
-                    <Button variant="ghost" onClick={() => setAberta(null)}>
+                    <Button variant="ghost" onClick={fechar}>
                       Fechar
                     </Button>
                   </div>

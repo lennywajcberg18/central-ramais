@@ -71,19 +71,18 @@ export async function startThread(tenantId: string, userId: string, input: Start
   const destino = await departments.findById(tenantId, input.toDepartmentId);
   if (!destino || !destino.active) throw new NotFoundError('setor não encontrado');
 
-  const thread = await threads.create(tenantId, {
-    fromDepartmentId: input.fromDepartmentId,
-    toDepartmentId: destino.id,
-    createdByUserId: userId,
-  });
-  await threads.createMessage(tenantId, {
-    threadId: thread.id,
-    userId,
-    senderSide: 'origin',
-    body: input.body,
-  });
-
-  return thread;
+  // Numa escrita só: thread sem a primeira mensagem vira linha sem assunto no
+  // /ramais, que ninguém encerra porque não há o que responder.
+  return threads.createWithFirstMessage(
+    tenantId,
+    {
+      fromDepartmentId: input.fromDepartmentId,
+      toDepartmentId: destino.id,
+      createdByUserId: userId,
+    },
+    // quem abre a conversa fala sempre do lado de origem
+    { userId, senderSide: 'origin', body: input.body }
+  );
 }
 
 export async function getThread(tenantId: string, userId: string, threadId: string) {

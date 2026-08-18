@@ -22,6 +22,10 @@ interface Metrics {
   assignAvgMinutes: number | null;
   resolutionAvgMinutes: number | null;
   slaPct: number | null;
+  // A outra leitura do SLA: entre as conversas que RECEBERAM resposta. O número
+  // grande da tela é o total (quem encerrou sem resposta conta contra a meta) —
+  // este fica na explicação, para separar "atendemos devagar" de "não atendemos".
+  slaPctEntreRespondidas: number | null;
   csatAvg: number | null;
   csatResponseRate: number | null;
   abandonmentPct: number | null;
@@ -75,7 +79,7 @@ const AJUDA = {
   volume: 'Conversas iniciadas entre as duas datas escolhidas.',
   frt: 'Quanto a pessoa de fora esperou até alguém do hospital responder.',
   duracao: 'Do primeiro contato até o encerramento da conversa.',
-  sla: 'De cada 100 pessoas respondidas, quantas ouviram o hospital em até 5 minutos.',
+  sla: 'De cada 100 conversas já respondidas ou encerradas, quantas ouviram o hospital em até 5 minutos. Quem encerrou sem nunca receber resposta conta contra a meta.',
   csat: 'Nota média de quem quis avaliar o atendimento.',
   respostaCsat: 'Quantos avaliaram depois de encerrar. Entre 20% e 40% é o normal.',
   inatividade: 'Conversas que morreram sozinhas depois de 30 minutos paradas.',
@@ -88,6 +92,13 @@ function leituraTempoResposta(v: number | null): Leitura | undefined {
   if (v < 5) return { tone: 'success', texto: 'dentro da meta de 5 minutos' };
   if (v <= 10) return { tone: 'warning', texto: 'acima da meta de 5 minutos' };
   return { tone: 'danger', texto: 'bem acima do aceitável' };
+}
+
+// As duas leituras do SLA na mesma frase: o card mostra o total, e quem quiser
+// saber se o problema foi lentidão ou ausência lê o segundo número aqui.
+function ajudaSla(entreRespondidas: number | null): string {
+  if (entreRespondidas == null) return AJUDA.sla;
+  return `${AJUDA.sla} Contando só quem foi respondido, o número é ${num(entreRespondidas)}%.`;
 }
 
 function leituraSla(v: number | null): Leitura | undefined {
@@ -342,7 +353,10 @@ export default function DashboardPage() {
     setErro(null);
     setMetrics(null);
 
-    api<Metrics>(`/admin/metrics?from=${from}T00:00:00&to=${to}T23:59:59`)
+    // Só a data: quem converte a janela para instantes é a API, no fuso do
+    // hospital. Mandar `T00:00:00` daqui fazia o servidor resolver a hora no fuso
+    // DELE e jogar o começo e o fim do dia no lugar errado.
+    api<Metrics>(`/admin/metrics?from=${from}&to=${to}`)
       .then((data) => {
         if (cancelado) return;
         setMetrics(data);
@@ -432,8 +446,15 @@ export default function DashboardPage() {
         <p className="pt-2 font-medium text-ink-800">Como a conta é feita</p>
         <ul className="space-y-1.5">
           <li>O tempo até responder só conta conversas que foram respondidas.</li>
+          <li>
+            Conversa que encerrou sem nenhuma resposta conta como fora da meta de 5 minutos —
+            ninguém some da conta por não ter sido atendido.
+          </li>
           <li>Conversa que ficou na fila sem atendente não entra em encerradas sozinhas.</li>
-          <li>Atendimento encerrado agora já conta em quantos avaliaram, mesmo sem resposta.</li>
+          <li>
+            Quantos avaliaram conta só quem chegou a receber a pergunta da nota: conversa sem
+            atendimento e acesso cortado no meio ficam de fora.
+          </li>
         </ul>
       </ExplainCard>
 
@@ -609,7 +630,7 @@ export default function DashboardPage() {
                     nome="Respondidos em 5 min"
                     valor={metrics.slaPct}
                     unidade="%"
-                    ajuda={AJUDA.sla}
+                    ajuda={ajudaSla(metrics.slaPctEntreRespondidas)}
                     leitura={leituraSla(metrics.slaPct)}
                   />
                   <Cartao

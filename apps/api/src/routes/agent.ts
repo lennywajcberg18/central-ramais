@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { BadRequestError, NotFoundError } from '../errors';
+import { BadRequestError, ConflictError, NotFoundError } from '../errors';
 import { requireAuth } from '../middleware/auth';
 import * as conversations from '../repositories/conversations';
 import * as departments from '../repositories/departments';
@@ -50,8 +50,10 @@ router.get('/agent/conversations', async (req, res, next) => {
 
 router.get('/agent/conversations/:id/messages', async (req, res, next) => {
   try {
-    const { tenantId } = req.auth!;
-    const conversation = await conversations.findById(tenantId, req.params.id);
+    const { tenantId, userId } = req.auth!;
+    // Setor entra na conta junto com o tenant: a conversa tem que ser minha ou
+    // do meu setor, senão é histórico de paciente de quem não me diz respeito.
+    const conversation = await conversations.findByIdForAgent(tenantId, userId, req.params.id);
     if (!conversation) throw new NotFoundError();
     const rows = await messagesRepo.listByConversation(tenantId, conversation.id);
     res.json(
@@ -77,7 +79,7 @@ router.post('/agent/conversations/:id/messages', async (req, res, next) => {
     const parsed = sendSchema.safeParse(req.body);
     if (!parsed.success) throw new BadRequestError('body obrigatório');
 
-    const conversation = await conversations.findByIdWithRelations(tenantId, req.params.id);
+    const conversation = await conversations.findByIdForAgent(tenantId, userId, req.params.id);
     if (!conversation) throw new NotFoundError();
     if (conversation.status === 'closed' || conversation.status === 'awaiting_feedback') {
       throw new BadRequestError('conversa encerrada');
@@ -88,15 +90,25 @@ router.post('/agent/conversations/:id/messages', async (req, res, next) => {
       throw new BadRequestError('este contato está bloqueado; desbloqueie antes de responder');
     }
 
-    // agente respondendo conversa da fila assume o atendimento
+    // Agente respondendo conversa da fila assume o atendimento. Se dois abrirem
+    // a mesma conversa e responderem juntos, quem chega primeiro fica com ela —
+    // a mensagem do segundo vai embora do mesmo jeito, porque ele já digitou.
     if (conversation.status === 'open') {
       const agora = new Date();
-      await conversations.update(tenantId, conversation.id, {
-        status: 'assigned',
-        assignedUserId: userId,
-        assignedAt: agora,
-      });
-      await conversations.markFirstAssignedOnce(tenantId, conversation.id, agora);
+      const assumida = await conversations.assignTo(tenantId, conversation.id, userId, agora);
+      if (assumida.count > 0) {
+        await conversations.markFirstAssignedOnce(tenantId, conversation.id, agora);
+      }
+    }
+
+    // O job de inatividade pode ter encerrado a conversa entre a leitura lá em
+    // cima e este ponto: sem a trava, a resposta sairia para o WhatsApp DEPOIS do
+    // encerramento e o `first_reply_at` seria gravado depois do `closed_at` —
+    // atendimento fantasma nas métricas e uma mensagem do hospital sem ninguém
+    // do outro lado.
+    const viva = await conversations.touchIfActive(tenantId, conversation.id);
+    if (viva.count === 0) {
+      throw new BadRequestError('esta conversa foi encerrada enquanto você escrevia');
     }
 
     await sendConversationMessage(
@@ -117,12 +129,20 @@ router.post('/agent/conversations/:id/messages', async (req, res, next) => {
 
 router.post('/agent/conversations/:id/close', async (req, res, next) => {
   try {
-    const { tenantId } = req.auth!;
-    const conversation = await conversations.findByIdWithRelations(tenantId, req.params.id);
+    const { tenantId, userId } = req.auth!;
+    const conversation = await conversations.findByIdForAgent(tenantId, userId, req.params.id);
     if (!conversation) throw new NotFoundError();
     if (conversation.status === 'closed') throw new BadRequestError('conversa já encerrada');
 
-    await closeFromAgent(tenantId, conversation.id);
+    // O `if` acima é atalho: entre a leitura e o encerramento a conversa pode ter
+    // sido encaminhada para outro setor ou já ter ido para `awaiting_feedback`
+    // por outro caminho. Sem conferir o booleano, a resposta era 200 {ok:true} e o
+    // atendente fechava a tela achando que encerrou — com a conversa viva no setor
+    // novo. Mesmo tratamento que o encaminhamento já dá a quem perde a corrida.
+    const encerrou = await closeFromAgent(tenantId, conversation.id);
+    if (!encerrou) {
+      throw new ConflictError('esta conversa mudou de setor ou já havia sido encerrada');
+    }
     res.json({ ok: true });
   } catch (err) {
     next(err);
@@ -132,8 +152,13 @@ router.post('/agent/conversations/:id/close', async (req, res, next) => {
 // Para onde esta conversa pode ir: os setores do link da pessoa, não os do hospital.
 router.get('/agent/conversations/:id/transfer-targets', async (req, res, next) => {
   try {
-    const { tenantId } = req.auth!;
-    res.json(await listTransferTargets(tenantId, req.params.id));
+    const { tenantId, userId } = req.auth!;
+    // Mesma guarda de setor das outras rotas de conversa: sem ela, o id vazado
+    // já entregava os setores do link daquele contato para quem não atende.
+    const conversation = await conversations.findByIdForAgent(tenantId, userId, req.params.id);
+    if (!conversation) throw new NotFoundError();
+
+    res.json(await listTransferTargets(tenantId, conversation.id));
   } catch (err) {
     next(err);
   }
@@ -147,9 +172,14 @@ router.post('/agent/conversations/:id/transfer', async (req, res, next) => {
     const parsed = transferSchema.safeParse(req.body);
     if (!parsed.success) throw new BadRequestError('escolha o setor de destino');
 
+    // Encaminhar tira a conversa do setor onde ela está. Quem não atende nem o
+    // setor nem a conversa não move o atendimento de ninguém.
+    const conversation = await conversations.findByIdForAgent(tenantId, userId, req.params.id);
+    if (!conversation) throw new NotFoundError();
+
     const resultado = await transferConversation(
       tenantId,
-      req.params.id,
+      conversation.id,
       parsed.data.departmentId,
       userId
     );

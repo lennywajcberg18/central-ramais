@@ -118,7 +118,9 @@ O menu é montado a partir dessa lista, nunca da lista completa do tenant.
 - Lista com 2+ → mostra o menu com apenas esses setores
 - Lista vazia → configuração inválida, bloquear na criação
 
-Um setor desativado depois some do menu automaticamente, sem editar link.
+Um setor desativado depois some do menu automaticamente, sem editar link — e
+leva junto o atendimento em curso: a conversa que estava viva nele é encerrada
+com `close_reason=access_revoked`, porque nenhum link mais autoriza aquele setor.
 
 ### Snapshot
 
@@ -162,6 +164,12 @@ isso. É o sinal de que um link nominal vazou.
 
 **Um contato tem um link.** Se a pessoa precisa de acesso diferente, o admin
 revoga e emite outro, ou reatribui o contato a outro link pelo painel.
+
+A reatribuição vale **na hora**, inclusive para a conversa que já está rodando:
+se ela estiver num setor que o link novo não permite, é encerrada com
+`close_reason=access_revoked`. A próxima mensagem da pessoa abre conversa nova
+já pelo menu do link novo. Sem isso, reatribuir mudaria o menu de amanhã e
+deixaria o atendimento de agora acontecendo dentro de um setor sem autorização.
 
 ---
 
@@ -232,8 +240,10 @@ trim):
 - `NÃO` → volta para `assigned`, avisa o agente no app
 - Outra coisa → repete uma vez; na segunda, assume `NÃO`
 
-Se o link tem um setor só, MENU responde que não há outro setor disponível e
-mantém a conversa.
+Se o link tem um setor só **e a conversa está nele**, MENU responde que não há
+outro setor disponível e mantém a conversa. Se a conversa estiver num setor que
+o link vigente não permite, MENU oferece a troca mesmo com um setor só na
+lista — senão a única saída da pessoa fecha justamente quando ela precisa dela.
 
 Sem isso, conversa esquecida pelo agente prende o externo.
 
@@ -246,7 +256,8 @@ WHERE status IN ('assigned','awaiting_department','awaiting_menu_confirm')
   AND last_message_at < now() - interval '30 minutes'
 ```
 
-Encerra com `close_reason=timeout` e envia CSAT.
+Encerra com `close_reason=timeout` e envia CSAT — se a conversa tiver chegado a
+alguém do hospital (ver §3).
 
 Por isso existe `conversations.last_message_at` denormalizado, atualizado a
 cada mensagem inbound e outbound. Sem ele o job vira join caro rodando 1.440
@@ -254,12 +265,22 @@ vezes por dia.
 
 **O job itera por tenant explicitamente.** Nunca varre a tabela inteira.
 
-### 3. Satisfação — enviada sempre, responder é opcional
+### 3. Satisfação — enviada em todo atendimento, responder é opcional
 
 - Ao encerrar, se `tenant.csat_enabled`: *"De 0 a 10, como foi o atendimento?
   (opcional)"*
+- **Todo encerramento pergunta**, com uma exceção: a conversa que nunca chegou a
+  ninguém do hospital (`first_assigned_at` nulo) e que o job de inatividade
+  encerrou. Ninguém atendeu — não há o que avaliar, e a nota de uma conversa
+  abandonada pesaria igual na média
+- Encerramento feito por gente — o atendente pelo botão (`agent_closed`) ou o
+  externo pelo MENU+SIM (`user_switched`) — pergunta sempre. Inclusive quando o
+  atendente resolveu por telefone e não digitou nada: quem esperou na fila foi
+  atendido
 - Número 0–10 → `feedback.score`
 - Texto livre após a nota, em até 10 min → `feedback.comment`
+- Outro número dentro dessa janela **corrige** a nota e é confirmado — quem
+  manda "2" depois de "9" está se corrigindo, não comentando
 - **Ignorar é aceitável.** Sem insistência, sem lembrete
 - Mensagem nova em vez de nota → fecha sem nota e **abre conversa nova**
 

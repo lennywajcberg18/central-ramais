@@ -2,7 +2,8 @@
 
 import { useParams, useRouter } from 'next/navigation';
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
-import { Button, Skeleton } from '@/components/ui';
+import ConfirmDialog from '@/components/ConfirmDialog';
+import { Button, Skeleton, comportamentoDeRolagem } from '@/components/ui';
 import { api } from '@/lib/api';
 
 interface ThreadDetail {
@@ -72,8 +73,14 @@ export default function RamalThreadPage() {
   // aviso de envio junto — a pessoa acharia que a mensagem foi
   const [erro, setErro] = useState<string | null>(null);
   const [erroEnvio, setErroEnvio] = useState<string | null>(null);
+  const [confirmandoEncerrar, setConfirmandoEncerrar] = useState(false);
+  const [encerrando, setEncerrando] = useState(false);
+  const [erroEncerrar, setErroEncerrar] = useState<string | null>(null);
+  const [anuncio, setAnuncio] = useState('');
   const fim = useRef<HTMLDivElement | null>(null);
   const contagem = useRef(0);
+  // separa o histórico que já estava na tela do que chegou depois
+  const carregou = useRef(false);
 
   const carregar = useCallback(async () => {
     try {
@@ -87,9 +94,17 @@ export default function RamalThreadPage() {
       // só rola quando chega mensagem nova, senão o polling rouba a rolagem de
       // quem está lendo o começo da conversa
       if (rows.length !== contagem.current) {
+        const jaEstavaNaTela = carregou.current;
         contagem.current = rows.length;
-        setTimeout(() => fim.current?.scrollIntoView({ behavior: 'smooth' }), 40);
+        const ultima = rows[rows.length - 1];
+        // anunciar na carga inicial faria o leitor de tela despejar a conversa
+        // inteira; sem isto, o outro setor responde e nada é anunciado
+        if (jaEstavaNaTela && ultima && !ultima.mine) {
+          setAnuncio(`${ultima.author.name}: ${ultima.body}`);
+        }
+        setTimeout(() => fim.current?.scrollIntoView({ behavior: comportamentoDeRolagem() }), 40);
       }
+      carregou.current = true;
     } catch (err) {
       setErro(err instanceof Error ? err.message : 'não foi possível carregar');
       setMensagens((atual) => atual ?? []);
@@ -123,12 +138,16 @@ export default function RamalThreadPage() {
   }
 
   async function encerrar() {
-    setErroEnvio(null);
+    if (encerrando) return;
+    setEncerrando(true);
+    setErroEncerrar(null);
     try {
       await api(`/agent/internal/${id}/close`, { method: 'POST' });
       router.push('/ramais');
     } catch (err) {
-      setErroEnvio(err instanceof Error ? err.message : 'não foi possível encerrar agora');
+      // o aviso fica dentro do diálogo, onde a pessoa acabou de clicar
+      setErroEncerrar(err instanceof Error ? err.message : 'não foi possível encerrar agora');
+      setEncerrando(false);
     }
   }
 
@@ -159,11 +178,23 @@ export default function RamalThreadPage() {
           </p>
         </div>
         {thread?.status !== 'closed' && (
-          <Button variant="secondary" onClick={encerrar}>
+          <Button
+            variant="danger"
+            onClick={() => {
+              setErroEncerrar(null);
+              setConfirmandoEncerrar(true);
+            }}
+          >
             Encerrar
           </Button>
         )}
       </header>
+
+      {/* região viva vazia desde o começo, com o resumo só do que chega: sem
+          ela, a resposta do outro setor não é anunciada de jeito nenhum */}
+      <p aria-live="polite" className="sr-only">
+        {anuncio}
+      </p>
 
       <div className="chat-canvas flex-1 space-y-2 overflow-y-auto px-3 py-4 sm:px-4">
         {mensagens === null ? (
@@ -239,6 +270,26 @@ export default function RamalThreadPage() {
           <IconEnviar />
         </button>
       </form>
+      )}
+
+      {/* encerrar é irreversível — a própria tela avisa que o assunto só volta
+          chamando o setor de novo — e era a única ação destrutiva sem confirmação */}
+      {confirmandoEncerrar && (
+        <ConfirmDialog
+          title="Encerrar esta conversa"
+          description="O assunto sai da lista dos dois setores. Para retomar, é preciso chamar o setor de novo."
+          confirmLabel="Encerrar conversa"
+          cancelLabel="Manter aberta"
+          errorPrefix="Não foi possível encerrar"
+          pendingLabel="Encerrando…"
+          pending={encerrando}
+          error={erroEncerrar}
+          onCancel={() => {
+            if (encerrando) return;
+            setConfirmandoEncerrar(false);
+          }}
+          onConfirm={() => void encerrar()}
+        />
       )}
     </div>
   );

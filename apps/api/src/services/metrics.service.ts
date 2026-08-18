@@ -1,6 +1,7 @@
 import * as accessAttempts from '../repositories/accessAttempts';
 import * as conversations from '../repositories/conversations';
 import * as externalContacts from '../repositories/externalContacts';
+import * as tenants from '../repositories/tenants';
 
 const SLA_TARGET_MS = 5 * 60 * 1000; // fixo no MVP: FRT < 5 min
 
@@ -31,6 +32,31 @@ export async function computeMetrics(
   const closed = rows.filter((c) => c.closedAt);
   const scored = rows.filter((c) => c.feedback?.score != null);
   const timeouts = closed.filter((c) => c.closeReason === 'timeout');
+
+  // SLA é "% das conversas do período com FRT < 5 min". Conversa que encerrou sem
+  // NENHUMA resposta é violação, não ausência de dado: contando só quem foi
+  // respondido, a madrugada em que 90 de 100 pessoas foram ignoradas exibia 100%
+  // ao lado de "Encerradas sozinhas: 90%". Quem ainda está em curso e sem resposta
+  // fica de fora — o prazo dessa conversa não terminou.
+  const comPrazoVencido = rows.filter((c) => c.firstReplyAt || c.closedAt);
+  const dentroDoPrazo = comPrazoVencido.filter(
+    (c) => c.firstReplyAt && c.firstReplyAt.getTime() - c.createdAt.getTime() < SLA_TARGET_MS
+  );
+
+  // Só entra na conta de "quantos avaliaram" quem chegou a ser perguntado. O CSAT
+  // depende do tenant e só é pedido quando houve atendimento de verdade
+  // (`firstReplyAt`); encerramento por corte de acesso ou por falta de atendente
+  // nunca pergunta. Sem isso a taxa punia o hospital por silêncios que o próprio
+  // sistema decidiu não pedir.
+  const tenant = await tenants.findById(tenantId);
+  const perguntados = tenant?.csatEnabled
+    ? closed.filter(
+        (c) =>
+          c.firstReplyAt !== null &&
+          c.closeReason !== 'access_revoked' &&
+          c.closeReason !== 'no_agent_available'
+      )
+    : [];
 
   const byDepartment = new Map<string, { name: string; volume: number }>();
   for (const c of rows) {
@@ -74,6 +100,12 @@ export async function computeMetrics(
     assignAvgMinutes: avgMinutes(assigns),
     resolutionAvgMinutes: avgMinutes(resolutions),
     slaPct:
+      comPrazoVencido.length > 0
+        ? Math.round((dentroDoPrazo.length / comPrazoVencido.length) * 100)
+        : null,
+    // A outra leitura, para quem quer separar "atendemos devagar" de "não
+    // atendemos": entre as que RECEBERAM resposta, quantas vieram em 5 min.
+    slaPctEntreRespondidas:
       frts.length > 0
         ? Math.round((frts.filter((ms) => ms < SLA_TARGET_MS).length / frts.length) * 100)
         : null,
@@ -84,7 +116,7 @@ export async function computeMetrics(
           ) / 10
         : null,
     csatResponseRate:
-      closed.length > 0 ? Math.round((scored.length / closed.length) * 100) : null,
+      perguntados.length > 0 ? Math.round((scored.length / perguntados.length) * 100) : null,
     abandonmentPct:
       closed.length > 0 ? Math.round((timeouts.length / closed.length) * 100) : null,
     byDepartment: [...byDepartment.entries()].map(([id, v]) => ({ departmentId: id, ...v })),

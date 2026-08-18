@@ -20,8 +20,10 @@ export class TwilioProvider implements WhatsAppProvider {
   }
 }
 
-// Validação de assinatura do webhook. Vive aqui para o SDK da Twilio
-// não vazar para fora de providers/twilio.ts. Desativável por env em dev.
+// Validação de assinatura do webhook. Vive aqui para o SDK da Twilio não vazar
+// para fora de providers/twilio.ts. Com validate=false o SDK pula a verificação
+// inteira, por isso o config.ts recusa o boot quando WHATSAPP_PROVIDER=twilio e a
+// flag está desligada: desativar só faz sentido com o provider mock, em dev.
 export function twilioWebhookMiddleware() {
   return twilio.webhook({
     validate: config.TWILIO_VALIDATE_WEBHOOK,

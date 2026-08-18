@@ -44,7 +44,7 @@ export async function startConversation(
   }
 
   const single = departments.length === 1;
-  const conversation = await conversations.create(ctx.tenantId, {
+  const { conversation, criada } = await conversations.createOrGetActive(ctx.tenantId, {
     whatsappNumberId: ctx.whatsappNumber.id,
     externalContactId: ctx.contact.id,
     entryLinkId: ctx.link.id,
@@ -55,6 +55,22 @@ export async function startConversation(
   });
 
   await persistInbound(conversation.id, ctx.tenantId, body, messageSid);
+
+  // Perdemos a corrida de criação: a conversa é a que o outro processo abriu, e
+  // ele já mandou o menu (ou o aviso de fila) e já chamou o rodízio. Seguir daqui
+  // repetiria os dois — o índice único fecha a linha duplicada, não a mensagem
+  // duplicada. Esta mensagem é uma inbound numa conversa viva e é assim que ela
+  // tem que ser tratada: no menu, ela é a escolha do setor (ou mais uma tentativa
+  // inválida). Nos outros estados ela fica só registrada, como o `open` do
+  // `handleActiveConversation` — inclusive um "MENU" que caia exatamente nesta
+  // janela de milissegundos, porque tratá-lo aqui fecharia um ciclo de import
+  // com o lifecycle.
+  if (!criada) {
+    if (conversation.status === 'awaiting_department') {
+      await handleDepartmentChoice(ctx, conversation, body, departments);
+    }
+    return conversation;
+  }
 
   if (single) {
     // lista com 1 setor pula o menu
@@ -90,7 +106,17 @@ export async function sendMenu(
 // Escolha numérica validada contra a lista DO LINK — setor fora do escopo do
 // link é inválido mesmo existindo no tenant (falha de autorização, não de UX).
 export function parseMenuChoice(body: string, departments: Department[]): Department | null {
-  const trimmed = body.trim();
+  // O teclado de emoji do WhatsApp fica a um toque e entrega "1️⃣"; alguns IMEs
+  // entregam "１". `\d` não casa nenhum dos dois, e a 4ª recusa atribui a pessoa
+  // ao primeiro setor da lista — ela vira escolha do sistema, não dela.
+  // Só limpa as bordas: varrer todo não-dígito faria "falar com o 2º andar"
+  // virar a opção 2.
+  const trimmed = body
+    .normalize('NFKC')
+    .replace(/[\uFE0F\u20E3]/g, '') // seletor de variação e keycap do "1️⃣"
+    .trim()
+    .replace(/[.)\-]+$/, '')
+    .trim();
   if (!/^\d{1,2}$/.test(trimmed)) return null;
   const index = parseInt(trimmed, 10);
   if (index < 1 || index > departments.length) return null;
@@ -102,10 +128,21 @@ export async function setDepartment(
   conversation: Conversation,
   department: Department
 ): Promise<void> {
-  await conversations.update(ctx.tenantId, conversation.id, {
-    departmentId: department.id,
-    status: 'open',
-  });
+  // O job de inatividade não passa pela fila do contato: alguém que recebe o
+  // menu, larga o celular e responde "1" meia hora depois pode responder no
+  // mesmo instante da varredura. Sem o estado no WHERE, a escolha ressuscitava a
+  // conversa — ela ia para um atendente já com `closed_at` e
+  // `close_reason=timeout` gravados, e o externo recebia a pergunta de nota
+  // antes de qualquer atendimento.
+  const escolheu = await conversations.moveStatus(
+    ctx.tenantId,
+    conversation.id,
+    'awaiting_department',
+    { departmentId: department.id, status: 'open' }
+  );
+  // encerrada nesse meio tempo: a próxima mensagem dela abre conversa nova
+  if (escolheu.count === 0) return;
+
   await sendConversationMessage(
     ctx.tenantId,
     conversation.id,
@@ -149,7 +186,13 @@ export async function handleDepartmentChoice(
     await setDepartment(ctx, conversation, departments[0]);
     return;
   }
-  await conversations.update(ctx.tenantId, conversation.id, { menuRetries: retries });
+  const repetiu = await conversations.moveStatus(
+    ctx.tenantId,
+    conversation.id,
+    'awaiting_department',
+    { menuRetries: retries }
+  );
+  if (repetiu.count === 0) return;
   await sendMenu(ctx, conversation.id, departments);
 }
 
@@ -159,10 +202,9 @@ export async function closeConversation(
   conversationId: string,
   reason: CloseReason
 ): Promise<void> {
-  await conversations.update(tenantId, conversationId, {
-    status: 'closed',
-    closeReason: reason,
-    closedAt: new Date(),
-  });
+  // Só encerra o que ainda está vivo: sem a guarda, bloquear um contato no mesmo
+  // instante em que o job encerra por inatividade reescreveria o `close_reason`
+  // e o `closed_at` de uma conversa já fechada.
+  await conversations.closeIfActive(tenantId, conversationId, reason);
 }
 

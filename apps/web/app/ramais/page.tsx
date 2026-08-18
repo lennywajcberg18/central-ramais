@@ -66,7 +66,15 @@ export default function RamaisPage() {
   const [enviando, setEnviando] = useState(false);
   const [erroEnvio, setErroEnvio] = useState<string | null>(null);
 
-  const ehAdmin = getSessionUser()?.role === 'admin';
+  // localStorage não existe no servidor: lido durante a renderização, getSessionUser()
+  // devolve null lá e o usuário aqui, o que rende hydration mismatch assim que o valor
+  // mudar a saída da primeira renderização. Depois da montagem os dois lados já
+  // concordam — é o mesmo padrão de /conversas.
+  const [ehAdmin, setEhAdmin] = useState(false);
+
+  useEffect(() => {
+    setEhAdmin(getSessionUser()?.role === 'admin');
+  }, []);
 
   const carregar = useCallback(async () => {
     try {
@@ -119,9 +127,12 @@ export default function RamaisPage() {
 
       <main className="space-y-5 px-4 pb-28 pt-5 sm:px-6 sm:pb-8">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <p className="min-w-0 flex-1 px-1 text-sm leading-relaxed text-ink-500">
-            Um setor falando com outro, por dentro do hospital. Ninguém de fora vê isto.
-          </p>
+          <div className="min-w-0 flex-1 px-1">
+            <h1 className="text-xl font-semibold text-ink-900">Ramais</h1>
+            <p className="mt-1 text-sm leading-relaxed text-ink-500">
+              Um setor falando com outro, por dentro do hospital. Ninguém de fora vê isto.
+            </p>
+          </div>
           {podeAbrir && !compondo && (
             <Button className="w-full sm:w-auto" onClick={() => setCompondo(true)}>
               Chamar outro setor

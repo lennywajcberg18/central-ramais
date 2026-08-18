@@ -15,6 +15,29 @@ export type AccessResult =
   // não identificado (sem código, código inválido, nominal já usado…)
   | { outcome: 'denied' };
 
+// Número que já tem contato: o vínculo gravado é a fonte de verdade e o código
+// nem precisa aparecer na mensagem (regra 8). Serve para quem já entrou antes e
+// para quem perdeu a corrida de criação — nos dois casos quem manda é o vínculo
+// que está no banco, não o código desta mensagem.
+async function resolveContatoConhecido(
+  tenantId: string,
+  waNumber: string,
+  contact: ExternalContact
+): Promise<AccessResult> {
+  if (contact.blocked) {
+    await accessAttempts.create(tenantId, { waNumber, reason: 'blocked' });
+    return { outcome: 'blocked' };
+  }
+
+  const link = await entryLinks.findById(tenantId, contact.entryLinkId);
+  if (!link || !link.active) {
+    await accessAttempts.create(tenantId, { waNumber, reason: 'revoked_link' });
+    return { outcome: 'revoked', contact };
+  }
+
+  return { outcome: 'authorized', contact, link };
+}
+
 export async function resolveAccess(
   tenantId: string,
   waNumber: string,
@@ -23,19 +46,7 @@ export async function resolveAccess(
   const contact = await externalContacts.findByWaNumber(tenantId, waNumber);
 
   if (contact) {
-    if (contact.blocked) {
-      await accessAttempts.create(tenantId, { waNumber, reason: 'blocked' });
-      return { outcome: 'blocked' };
-    }
-
-    const link = await entryLinks.findById(tenantId, contact.entryLinkId);
-    if (!link || !link.active) {
-      await accessAttempts.create(tenantId, { waNumber, reason: 'revoked_link' });
-      return { outcome: 'revoked', contact };
-    }
-
-    // O vínculo é a fonte de verdade — o código nem precisa aparecer na mensagem.
-    return { outcome: 'authorized', contact, link };
+    return resolveContatoConhecido(tenantId, waNumber, contact);
   }
 
   // Número novo: só entra com código válido.
@@ -58,15 +69,40 @@ export async function resolveAccess(
   }
 
   if (link.kind === 'nominal') {
-    const taken = await externalContacts.existsForLink(tenantId, link.id);
-    if (taken) {
+    // A reivindicação do link nominal acontece com a LINHA DO LINK travada. A fila
+    // do webhook é por CONTATO, e dois números novos são contatos diferentes: os
+    // dois liam "link livre" e os dois criavam vínculo. Depois disso o vínculo é a
+    // fonte de verdade (regra 8) e o número que entrou de carona fica autorizado
+    // para sempre, sem nenhum `nominal_taken` para o admin ver (regra 9). Serializar
+    // em memória resolvia isso só dentro de um processo — a trava é do banco porque
+    // ela precisa atravessar instâncias e sobreviver a restart.
+    const claimed = await entryLinks.withLinkClaim(tenantId, link.id, async (tx) => {
+      // relê DENTRO da transação: enquanto esperávamos a trava, outro número pode
+      // ter reivindicado este link
+      const holder = await externalContacts.findHolderOfLink(tenantId, link.id, tx);
+      if (holder) return null;
+      return externalContacts.create(tenantId, { waNumber, entryLinkId: link.id }, tx);
+    });
+
+    if (!claimed) {
       // Segundo número num link nominal: recusa e alerta — é assim que o admin
-      // descobre que o link vazou.
+      // descobre que o link vazou. Fora da transação de propósito: um rollback não
+      // pode apagar o registro da recusa.
       await accessAttempts.create(tenantId, { waNumber, entryCodeTried: code, reason: 'nominal_taken' });
       return { outcome: 'denied' };
     }
+    return { outcome: 'authorized', contact: claimed, link };
   }
 
-  const created = await externalContacts.create(tenantId, { waNumber, entryLinkId: link.id });
+  // Link de perfil aceita vários números, então não há trava de linha nenhuma
+  // aqui: duas mensagens do mesmo número novo chegam as duas neste ponto e as
+  // duas tentam criar. `createOrGet` faz a perdedora seguir no contato que a
+  // outra acabou de criar — com `create` nu ela estourava e a mensagem sumia.
+  const created = await externalContacts.createOrGet(tenantId, { waNumber, entryLinkId: link.id });
+  if (created.entryLinkId !== link.id) {
+    // Perdeu a corrida para uma mensagem que trazia OUTRO código: o setor
+    // oferecido tem que sair do vínculo gravado, não do link deste código.
+    return resolveContatoConhecido(tenantId, waNumber, created);
+  }
   return { outcome: 'authorized', contact: created, link };
 }

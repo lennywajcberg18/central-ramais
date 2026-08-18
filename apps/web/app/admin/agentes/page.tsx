@@ -332,6 +332,12 @@ interface DiaEscala {
   fim: string;
 }
 
+// O fim 1440 (meia-noite do dia seguinte) volta daqui como "00:00" porque é o
+// único jeito de dizer meia-noite para um <input type="time">: "24:00" é valor
+// inválido e o navegador limpa o campo. Quem devolve o sentido de "vai até o fim
+// do dia" é a marca ao lado do campo — sem ela, a escala que a migração deu a
+// todo atendente antigo (0 a 1440) aparecia como "00:00 até 00:00", que se lê
+// como plantão de duração zero.
 function minutoParaHora(minute: number): string {
   const m = minute % 1440;
   return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
@@ -449,7 +455,7 @@ function ShiftEditor({
                     />
                     {DIAS[weekday]}
                   </label>
-                  <div className="flex items-center gap-2 text-sm text-ink-500">
+                  <div className="flex flex-wrap items-center gap-2 text-sm text-ink-500">
                     <input
                       type="time"
                       value={dia.inicio}
@@ -467,6 +473,11 @@ function ShiftEditor({
                       aria-label={`Fim do plantão de ${DIAS[weekday]}`}
                       className={`${inputClass} mt-0 w-28 disabled:opacity-40`}
                     />
+                    {dia.fim === '00:00' && (
+                      <span className={`text-xs ${dia.ativo ? '' : 'opacity-40'}`}>
+                        (24:00 — fim do dia)
+                      </span>
+                    )}
                   </div>
                 </div>
               ))}
@@ -474,6 +485,8 @@ function ShiftEditor({
 
             <p className="mt-3 text-xs leading-relaxed text-ink-500">
               Fim menor que o início é plantão que vira o dia — 19:00 às 07:00 cobre a noite inteira.
+              Fim 00:00 é a meia-noite seguinte, ou seja 24:00: de 00:00 às 00:00 a pessoa fica de
+              plantão o dia inteiro, não zero minuto.
             </p>
 
             {diasComVariasFaixas.length > 0 && (

@@ -164,8 +164,20 @@ export function Field({
   );
 }
 
+// 16px no celular: o WebKit do iPhone amplia a página sozinho ao focar campo
+// com fonte menor que isso, e não desfaz o zoom ao sair. A partir do sm volta a
+// 14px, onde não existe esse comportamento.
 export const inputClass =
-  'mt-1 w-full rounded-xl border border-ink-300 bg-white px-3 py-2 text-sm outline-none placeholder:text-ink-400 focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10';
+  'mt-1 w-full rounded-xl border border-ink-300 bg-white px-3 py-2 text-base outline-none placeholder:text-ink-400 focus:border-brand-500 focus:ring-4 focus:ring-brand-500/10 sm:text-sm';
+
+// `scroll-behavior: auto` no CSS não vence o `behavior: 'smooth'` passado na
+// chamada, então quem rola por JS precisa consultar a preferência aqui.
+export function comportamentoDeRolagem(): ScrollBehavior {
+  return typeof window !== 'undefined' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    ? 'auto'
+    : 'smooth';
+}
 
 export function Skeleton({ className = '' }: { className?: string }) {
   return <div className={`animate-pulse rounded-lg bg-ink-100 ${className}`} />;

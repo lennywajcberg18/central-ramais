@@ -20,7 +20,24 @@ export function getSessionUser(): SessionUser | null {
   return raw ? (JSON.parse(raw) as SessionUser) : null;
 }
 
+// O rascunho da conversa vive em sessionStorage para sobreviver ao recarregamento
+// duro que o fim de plantão provoca. Ele só não pode sobreviver à TROCA de
+// pessoa: o tablet do posto de enfermagem é compartilhado, e o texto de um
+// atendente não pode reaparecer na tela do próximo. Limpar em clearSession não
+// serve — é ele quem roda no 401 do fim de plantão, o caso que queremos salvar.
+export const PREFIXO_RASCUNHO = 'rascunho:';
+
+// Dono dos rascunhos guardado à parte porque clearSession apaga o usuário do
+// localStorage antes do redirect — na volta não haveria com quem comparar.
+const CHAVE_DONO_DO_RASCUNHO = 'rascunho-dono';
+
 export function saveSession(token: string, user: SessionUser): void {
+  if (sessionStorage.getItem(CHAVE_DONO_DO_RASCUNHO) !== user.id) {
+    for (const chave of Object.keys(sessionStorage)) {
+      if (chave.startsWith(PREFIXO_RASCUNHO)) sessionStorage.removeItem(chave);
+    }
+  }
+  sessionStorage.setItem(CHAVE_DONO_DO_RASCUNHO, user.id);
   localStorage.setItem('token', token);
   localStorage.setItem('user', JSON.stringify(user));
 }

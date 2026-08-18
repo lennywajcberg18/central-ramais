@@ -1,8 +1,14 @@
 import * as conversations from '../repositories/conversations';
 import * as users from '../repositories/users';
+import { runSerialized } from '../utils/keyedQueue';
 
 // Round-robin: agente disponível do setor que foi atribuído há mais tempo.
 // Sem agente disponível → a conversa fica em `open`, sem erro.
+//
+// A escolha é serializada POR SETOR. Duas pessoas de fora escrevendo ao mesmo
+// tempo para o mesmo ramal são contatos diferentes, então o webhook as processa
+// em paralelo — e as duas liam a mesma "última atribuição" e escolhiam o mesmo
+// atendente. Um ficava com as duas conversas, o outro com nenhuma.
 export interface AssignOptions {
   // Quem acabou de encaminhar não pode receber a conversa de volta: para quem
   // está de fora, o atendimento voltaria para a mesma pessoa que o passou adiante.
@@ -18,32 +24,52 @@ export async function tryAssign(
   if (!conversation || conversation.status !== 'open' || !conversation.departmentId) {
     return false;
   }
+  const departmentId = conversation.departmentId;
 
-  const todos = await users.availableAgentsForDepartment(tenantId, conversation.departmentId);
-  const agents = options.exceptUserId
-    ? todos.filter((a) => a.id !== options.exceptUserId)
-    : todos;
-  if (agents.length === 0) return false;
+  return runSerialized(`assign:${tenantId}:${departmentId}`, async () => {
+    // relê dentro da fila: enquanto esperávamos a vez, a conversa pode ter sido
+    // assumida, encerrada ou encaminhada para outro setor
+    const atual = await conversations.findById(tenantId, conversationId);
+    if (!atual || atual.status !== 'open' || atual.departmentId !== departmentId) {
+      return false;
+    }
 
-  const lastAssignments = await conversations.lastAssignedAtByUsers(
-    tenantId,
-    agents.map((a) => a.id)
-  );
-  const lastByUser = new Map(
-    lastAssignments.map((r) => [r.assignedUserId, r._max.assignedAt?.getTime() ?? 0])
-  );
+    const todos = await users.availableAgentsForDepartment(tenantId, departmentId);
+    const agents = options.exceptUserId
+      ? todos.filter((a) => a.id !== options.exceptUserId)
+      : todos;
+    if (agents.length === 0) return false;
 
-  agents.sort((a, b) => (lastByUser.get(a.id) ?? 0) - (lastByUser.get(b.id) ?? 0));
-  const chosen = agents[0];
+    const lastAssignments = await conversations.lastAssignedAtByUsers(
+      tenantId,
+      agents.map((a) => a.id)
+    );
+    const lastByUser = new Map(
+      lastAssignments.map((r) => [r.assignedUserId, r._max.assignedAt?.getTime() ?? 0])
+    );
 
-  const agora = new Date();
-  await conversations.update(tenantId, conversationId, {
-    status: 'assigned',
-    assignedUserId: chosen.id,
-    assignedAt: agora,
+    agents.sort((a, b) => (lastByUser.get(a.id) ?? 0) - (lastByUser.get(b.id) ?? 0));
+    const chosen = agents[0];
+
+    const agora = new Date();
+    // A guarda no WHERE segura o que a fila não cobre: outra instância do
+    // processo, o próprio atendente assumindo pela tela no mesmo instante, o
+    // escolhido encerrando o plantão entre a leitura dos elegíveis e o UPDATE, e
+    // o admin tirando ele deste setor no mesmo instante. Por isso o setor vai
+    // junto: quem recebe a conversa tem que atender ESTE ramal no instante do
+    // UPDATE, não no instante em que foi escolhido.
+    const result = await conversations.assignToIfOnShift(
+      tenantId,
+      conversationId,
+      chosen.id,
+      departmentId,
+      agora
+    );
+    if (result.count === 0) return false;
+
+    await conversations.markFirstAssignedOnce(tenantId, conversationId, agora);
+    return true;
   });
-  await conversations.markFirstAssignedOnce(tenantId, conversationId, agora);
-  return true;
 }
 
 // Disparado quando um agente fica disponível: pega a fila dos setores dele.
@@ -53,6 +79,15 @@ export async function assignPendingForUser(tenantId: string, userId: string): Pr
 
   const pending = await conversations.listOpenForDepartments(tenantId, departmentIds);
   for (const conversation of pending) {
-    await tryAssign(tenantId, conversation.id);
+    try {
+      await tryAssign(tenantId, conversation.id);
+    } catch (err) {
+      // Uma conversa que não pôde ser distribuída não pode levar as outras junto —
+      // nem o login de quem acabou de entrar de plantão, que é o chamador
+      // principal e já criou a sessão e virou `available` antes de chegar aqui.
+      // A conversa continua `open` na fila do setor, à vista de todo mundo, e o
+      // próximo evento de rodízio tenta de novo.
+      console.error(`[routing] falha ao distribuir a conversa ${conversation.id}:`, err);
+    }
   }
 }
