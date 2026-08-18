@@ -41,6 +41,48 @@ Sem o add-on de IPv4, o host direto só existe em IPv6. Render e Vercel rodam em
 rede IPv4. De lá, esse endereço simplesmente não resolve. Por isso as duas
 variáveis ficam no pooler, em modos diferentes.
 
+## A API REST pública do Supabase, e por que ela está fechada
+
+O Supabase publica o schema `public` numa API REST acessível com a **chave
+anônima** — uma chave que é pública por desenho, feita para ficar dentro de um
+navegador. E ele mantém DEFAULT PRIVILEGES concedendo acesso a `anon` e
+`authenticated` em toda tabela nova criada pelo papel `postgres`. Como é o
+`postgres` que roda as migrations, **cada tabela que o Prisma criou nasceu
+publicada**.
+
+Medido neste banco, antes da migration `20260818190000_fecha_a_api_publica`:
+
+```
+GET  /rest/v1/users?select=email,password_hash   200  → hash bcrypt do admin
+GET  /rest/v1/entry_links?select=slug,entry_code 200  → MEDX, CONV, ANAR
+GET  /rest/v1/external_contacts                  200  → telefone de paciente
+POST /rest/v1/tenants                            201  → escrita, não só leitura
+```
+
+O `entry_code` é o segundo nível de autorização do produto inteiro. Vazá-lo é
+vazar a credencial que decide quais setores um externo alcança — a regra que o
+`CLAUDE.md` chama de inegociável, contornada por fora da aplicação.
+
+A migration fecha isso em **duas camadas independentes**:
+
+1. **Revogar privilégios** de `anon` e `authenticated` — inclusive
+   `ALTER DEFAULT PRIVILEGES`, sem o qual a próxima migration do Prisma reabriria
+   o buraco sozinha.
+2. **Ligar RLS** em todas as tabelas, sem policy nenhuma. Sem policy, RLS nega
+   tudo para quem não tem `rolbypassrls`. O papel `postgres`, que é por onde o
+   Prisma entra, tem — por isso a aplicação não sente nada. Verificado: as três
+   suítes de concorrência passam igual, antes e depois.
+
+Nunca use `FORCE ROW LEVEL SECURITY` aqui: ele aplicaria RLS também ao dono da
+tabela, e aí sim a aplicação pararia.
+
+Verificado depois: leitura e escrita anônimas respondem `401 permission denied`,
+e uma tabela nova criada pelo `postgres` já nasce inacessível.
+
+**Regra para quem escrever a próxima migration:** tabela nova em `public` precisa
+de `ENABLE ROW LEVEL SECURITY` na mesma migration. A revogação de privilégios já
+a protege, mas a segunda camada não se aplica sozinha a tabelas futuras.
+
 ## O que o boot recusa, e por quê
 
 `apps/api/src/config.ts` barra três configurações no arranque. Todas as três são

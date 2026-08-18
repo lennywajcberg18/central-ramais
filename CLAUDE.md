@@ -48,6 +48,32 @@ Instale a skill `multi-tenant-guard` no Claude Code. Vou cobrar em PR.
 
 ---
 
+## A terceira regra: nada do `public` sai pela API do Supabase
+
+O Supabase publica o schema `public` numa API REST que aceita a chave anônima —
+pública por desenho. E ele concede acesso a `anon` em **toda tabela nova criada
+pelo `postgres`**, que é o papel que roda as migrations.
+
+Migration que cria tabela em `public` liga RLS nela, na mesma migration:
+
+```sql
+ALTER TABLE "minha_tabela" ENABLE ROW LEVEL SECURITY;
+```
+
+Sem policy é o certo: esta aplicação não usa a API REST do Supabase, e RLS sem
+policy nega tudo para quem não tem `rolbypassrls`. O Prisma entra como
+`postgres`, que tem, e não sente nada. Nunca use `FORCE ROW LEVEL SECURITY`.
+
+Antes de dar deploy num banco Supabase novo, confira que fechou:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}
+"   "https://<ref>.supabase.co/rest/v1/users?select=*" -H "apikey: <anon>"
+# 401 = fechado. 200 = o banco inteiro está na internet.
+```
+
+Ver `docs/BANCO.md` para o que já vazava antes de isto existir.
+
 ## A segunda regra: o link é a credencial
 
 Este produto tem **dois níveis de autorização**, não um. Não confunda:
