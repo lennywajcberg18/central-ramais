@@ -4,6 +4,7 @@
     "gru1"
   ],
   "buildCommand": "prisma generate",
+  "outputDirectory": "public",
   "rewrites": [
     {
       "source": "/(.*)",
