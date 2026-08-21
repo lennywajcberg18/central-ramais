@@ -208,22 +208,29 @@ export async function seed() {
           availability: Availability.available,
         },
       });
+      const departmentIds: string[] = [];
       for (const deptName of agentSeed.departmentNames) {
         const departmentId = departments.get(deptName);
         if (!departmentId) throw new Error(`setor não encontrado no seed: ${deptName}`);
         await prisma.userDepartment.create({ data: { userId: agent.id, departmentId } });
+        departmentIds.push(departmentId);
       }
 
-      // A mesma faixa nos sete dias: escala real varia, mas aqui o que precisa
-      // ficar demonstrável é o efeito do plantão, não a montagem da escala.
+      // A mesma faixa nos sete dias e em todos os setores da pessoa: escala real
+      // varia por dia e por setor, mas aqui o que precisa ficar demonstrável é o
+      // efeito do plantão, não a montagem da escala. Quem cobre três setores tem
+      // 21 linhas — uma por dia e setor.
       await prisma.shift.createMany({
-        data: Array.from({ length: 7 }, (_, weekday) => ({
-          tenantId: tenant.id,
-          userId: agent.id,
-          weekday,
-          startMinute: agentSeed.shift.startMinute,
-          endMinute: agentSeed.shift.endMinute,
-        })),
+        data: departmentIds.flatMap((departmentId) =>
+          Array.from({ length: 7 }, (_, weekday) => ({
+            tenantId: tenant.id,
+            userId: agent.id,
+            departmentId,
+            weekday,
+            startMinute: agentSeed.shift.startMinute,
+            endMinute: agentSeed.shift.endMinute,
+          }))
+        ),
       });
     }
 

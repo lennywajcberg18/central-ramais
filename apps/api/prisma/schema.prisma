@@ -147,6 +147,7 @@ model Department {
   users           UserDepartment[]
   entryLinks      EntryLinkDepartment[]
   conversations   Conversation[]
+  shifts          Shift[]
   threadsSent     InternalThread[]      @relation("threadFrom")
   threadsReceived InternalThread[]      @relation("threadTo")
 
@@ -182,20 +183,29 @@ model User {
 // Escala do atendente: uma linha por faixa de plantão em um dia da semana.
 // Os minutos são contados desde 00:00 no fuso do tenant; `endMinute` menor que
 // `startMinute` significa plantão que vira o dia (19h às 7h).
+// A escala é por SETOR, não por pessoa: quem está de plantão está de plantão em
+// algum lugar. Sem o setor aqui, entrar de plantão ligava a pessoa em todos os
+// setores dela ao mesmo tempo — e aí não há como responder "quantos estão no CT
+// agora", que é o que o limite de plantonistas e o aviso de setor descoberto
+// precisam saber. Uma pessoa que cobre dois setores no mesmo turno tem duas
+// linhas, uma por setor.
 model Shift {
-  id          String   @id @default(uuid())
-  tenantId    String   @map("tenant_id")
-  userId      String   @map("user_id")
-  weekday     Int
-  startMinute Int      @map("start_minute")
-  endMinute   Int      @map("end_minute")
-  active      Boolean  @default(true)
-  createdAt   DateTime @default(now()) @map("created_at")
+  id           String   @id @default(uuid())
+  tenantId     String   @map("tenant_id")
+  userId       String   @map("user_id")
+  departmentId String   @map("department_id")
+  weekday      Int
+  startMinute  Int      @map("start_minute")
+  endMinute    Int      @map("end_minute")
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now()) @map("created_at")
 
-  tenant Tenant @relation(fields: [tenantId], references: [id])
-  user   User   @relation(fields: [userId], references: [id])
+  tenant     Tenant     @relation(fields: [tenantId], references: [id])
+  user       User       @relation(fields: [userId], references: [id])
+  department Department @relation(fields: [departmentId], references: [id])
 
   @@index([tenantId, userId, weekday])
+  @@index([tenantId, departmentId, weekday])
   @@map("shifts")
 }
 

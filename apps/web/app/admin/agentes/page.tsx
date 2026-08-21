@@ -312,6 +312,7 @@ function ConfirmDeactivate({
 interface ShiftRow {
   id: string;
   userId: string;
+  departmentId: string;
   weekday: number;
   startMinute: number;
   endMinute: number;
@@ -354,33 +355,58 @@ function escalaVazia(): DiaEscala[] {
   return DIAS.map(() => ({ ativo: false, inicio: '07:00', fim: '19:00' }));
 }
 
-// O editor mostra uma faixa por dia. Se a escala tiver duas no mesmo dia, salvar
-// aqui apagaria a outra em silêncio — por isso o dia extra é sinalizado.
-function escalaDeShifts(shifts: ShiftRow[]): { dias: DiaEscala[]; diasComVariasFaixas: number[] } {
-  const dias = escalaVazia();
-  const vistos = new Set<number>();
-  const diasComVariasFaixas: number[] = [];
+// A escala é por setor: a mesma pessoa pode estar no CT na segunda e na Recepção
+// na quarta. O editor guarda TODOS os setores dela ao mesmo tempo e mostra um por
+// vez — salvar manda o conjunto inteiro, para que trocar de aba nunca apague o
+// que estava na aba anterior.
+type EscalaPorSetor = Record<string, DiaEscala[]>;
+
+function escalaVaziaPorSetor(departmentIds: string[]): EscalaPorSetor {
+  return Object.fromEntries(departmentIds.map((id) => [id, escalaVazia()]));
+}
+
+// O editor mostra uma faixa por dia em cada setor. Se a escala tiver duas no
+// mesmo dia e setor, salvar aqui apagaria a outra em silêncio — por isso o dia
+// extra é sinalizado, setor a setor.
+function escalaDeShifts(
+  shifts: ShiftRow[],
+  departmentIds: string[]
+): { porSetor: EscalaPorSetor; extrasPorSetor: Record<string, number[]> } {
+  const porSetor = escalaVaziaPorSetor(departmentIds);
+  const extrasPorSetor: Record<string, number[]> = {};
+  const vistos = new Set<string>();
 
   for (const shift of shifts) {
     if (shift.weekday < 0 || shift.weekday > 6) continue;
-    if (vistos.has(shift.weekday)) {
-      if (!diasComVariasFaixas.includes(shift.weekday)) diasComVariasFaixas.push(shift.weekday);
+    // Faixa de um setor que a pessoa não tem mais não cabe em aba nenhuma. Não
+    // deveria existir — sair de um setor apaga a escala dele —, mas exibir só o
+    // que tem aba é melhor que quebrar o editor com uma chave inexistente.
+    if (!porSetor[shift.departmentId]) continue;
+
+    const chave = `${shift.departmentId}:${shift.weekday}`;
+    if (vistos.has(chave)) {
+      const extras = extrasPorSetor[shift.departmentId] ?? [];
+      if (!extras.includes(shift.weekday)) extras.push(shift.weekday);
+      extrasPorSetor[shift.departmentId] = extras;
       continue;
     }
-    vistos.add(shift.weekday);
-    dias[shift.weekday] = {
+    vistos.add(chave);
+    porSetor[shift.departmentId][shift.weekday] = {
       ativo: true,
       inicio: minutoParaHora(shift.startMinute),
       fim: minutoParaHora(shift.endMinute),
     };
   }
-  return { dias, diasComVariasFaixas };
+  return { porSetor, extrasPorSetor };
 }
 
 function ShiftEditor({
   user,
-  dias,
-  diasComVariasFaixas,
+  setores,
+  setorAtivo,
+  onSetorChange,
+  porSetor,
+  extrasPorSetor,
   onChange,
   onSave,
   onCancel,
@@ -390,9 +416,12 @@ function ShiftEditor({
   error,
 }: {
   user: UserRow;
-  dias: DiaEscala[];
-  diasComVariasFaixas: number[];
-  onChange: (weekday: number, dia: DiaEscala) => void;
+  setores: { id: string; name: string }[];
+  setorAtivo: string;
+  onSetorChange: (departmentId: string) => void;
+  porSetor: EscalaPorSetor;
+  extrasPorSetor: Record<string, number[]>;
+  onChange: (departmentId: string, weekday: number, dia: DiaEscala) => void;
   onSave: () => void;
   onCancel: () => void;
   saving: boolean;
@@ -408,10 +437,19 @@ function ShiftEditor({
     return () => window.removeEventListener('keydown', onKey);
   }, [onCancel, saving]);
 
+  const dias = porSetor[setorAtivo] ?? escalaVazia();
+  const diasComVariasFaixas = extrasPorSetor[setorAtivo] ?? [];
+
+  // Quantos dias marcados em cada setor: é o que deixa visível, sem trocar de
+  // aba, que a Recepção ficou sem nenhum dia.
+  function diasMarcados(departmentId: string): number {
+    return (porSetor[departmentId] ?? []).filter((d) => d.ativo).length;
+  }
+
   function aplicarEmTodos() {
     const base = dias.find((d) => d.ativo) ?? dias[0];
     for (let i = 0; i < DIAS.length; i++) {
-      onChange(i, { ativo: true, inicio: base.inicio, fim: base.fim });
+      onChange(setorAtivo, i, { ativo: true, inicio: base.inicio, fim: base.fim });
     }
   }
 
@@ -427,8 +465,9 @@ function ShiftEditor({
           Escala de plantão · {user.name}
         </h2>
         <p className="mt-2 text-sm leading-relaxed text-ink-600">
-          Fora do horário marcado, esta pessoa não entra no sistema. Quando o plantão acaba, o acesso
-          é encerrado e as conversas dela voltam para a fila do setor.
+          A escala é por setor: marque em cada um os dias e horários em que esta pessoa atende ali.
+          Fora do horário marcado ela não entra no sistema, e quando o plantão acaba as conversas
+          dela voltam para a fila do setor.
         </p>
 
         {loading ? (
@@ -437,9 +476,48 @@ function ShiftEditor({
             <Skeleton className="h-10" />
             <Skeleton className="h-10" />
           </div>
+        ) : setores.length === 0 ? (
+          // Escala é por setor: sem setor não há o que escalar, e um editor com
+          // sete dias vazios que não salva nada seria pior que dizer isto.
+          <p className="mt-5 rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-sm leading-relaxed text-amber-800">
+            Esta pessoa não está em nenhum setor, então não há escala a montar. Use o botão
+            &ldquo;Setores&rdquo; na linha dela primeiro.
+          </p>
         ) : (
           <>
-            <div className="mt-5 space-y-1.5">
+            {/* Um setor por vez na tela, todos na memória: salvar manda o
+                conjunto inteiro, então trocar de aba não perde nada. */}
+            <div
+              role="tablist"
+              aria-label="Setores desta pessoa"
+              className="mt-5 flex flex-wrap gap-1.5"
+            >
+              {setores.map((setor) => {
+                const marcados = diasMarcados(setor.id);
+                const ativo = setor.id === setorAtivo;
+                return (
+                  <button
+                    key={setor.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={ativo}
+                    onClick={() => onSetorChange(setor.id)}
+                    className={`rounded-full border px-3 py-1.5 text-sm transition ${
+                      ativo
+                        ? 'border-brand-600 bg-brand-50 font-medium text-brand-800'
+                        : 'border-ink-200 text-ink-600 hover:border-ink-300 hover:text-ink-800'
+                    }`}
+                  >
+                    {setor.name}
+                    <span className={marcados === 0 ? 'ml-1.5 text-amber-700' : 'ml-1.5 text-ink-400'}>
+                      {marcados === 0 ? 'sem dias' : `${marcados}d`}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="mt-4 space-y-1.5">
               {dias.map((dia, weekday) => (
                 <div
                   key={DIAS[weekday]}
@@ -449,7 +527,7 @@ function ShiftEditor({
                     <input
                       type="checkbox"
                       checked={dia.ativo}
-                      onChange={(e) => onChange(weekday, { ...dia, ativo: e.target.checked })}
+                      onChange={(e) => onChange(setorAtivo, weekday, { ...dia, ativo: e.target.checked })}
                       className="h-4 w-4 rounded border-ink-300 text-brand-600 focus:ring-brand-500"
                     />
                     {DIAS[weekday]}
@@ -459,7 +537,7 @@ function ShiftEditor({
                       type="time"
                       value={dia.inicio}
                       disabled={!dia.ativo}
-                      onChange={(e) => onChange(weekday, { ...dia, inicio: e.target.value })}
+                      onChange={(e) => onChange(setorAtivo, weekday, { ...dia, inicio: e.target.value })}
                       aria-label={`Início do plantão de ${DIAS[weekday]}`}
                       className={`${inputClass} mt-0 w-28 disabled:opacity-40`}
                     />
@@ -468,7 +546,7 @@ function ShiftEditor({
                       type="time"
                       value={dia.fim}
                       disabled={!dia.ativo}
-                      onChange={(e) => onChange(weekday, { ...dia, fim: e.target.value })}
+                      onChange={(e) => onChange(setorAtivo, weekday, { ...dia, fim: e.target.value })}
                       aria-label={`Fim do plantão de ${DIAS[weekday]}`}
                       className={`${inputClass} mt-0 w-28 disabled:opacity-40`}
                     />
@@ -493,7 +571,7 @@ function ShiftEditor({
                 role="alert"
                 className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800"
               >
-                Esta pessoa tem mais de um plantão no mesmo dia (
+                Neste setor esta pessoa tem mais de um plantão no mesmo dia (
                 {diasComVariasFaixas.map((d) => DIAS[d]).join(', ')}). Esta tela mostra um por dia —
                 salvar aqui mantém só o horário que está aparecendo.
               </p>
@@ -535,6 +613,7 @@ function ShiftEditor({
 export default function AgentesPage() {
   const [users, setUsers] = useState<UserRow[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
+  const [todosSetores, setTodosSetores] = useState<Department[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -554,8 +633,9 @@ export default function AgentesPage() {
   const [notice, setNotice] = useState<string | null>(null);
 
   const [shiftUser, setShiftUser] = useState<UserRow | null>(null);
-  const [shiftDias, setShiftDias] = useState<DiaEscala[]>(escalaVazia());
-  const [shiftDiasExtras, setShiftDiasExtras] = useState<number[]>([]);
+  const [shiftPorSetor, setShiftPorSetor] = useState<EscalaPorSetor>({});
+  const [shiftExtras, setShiftExtras] = useState<Record<string, number[]>>({});
+  const [shiftSetorAtivo, setShiftSetorAtivo] = useState('');
   const [shiftCarregou, setShiftCarregou] = useState(false);
   const [shiftLoading, setShiftLoading] = useState(false);
   const [savingShift, setSavingShift] = useState(false);
@@ -571,7 +651,13 @@ export default function AgentesPage() {
         api<OpenShift[]>('/admin/shift-sessions'),
       ]);
       setUsers(u);
+      // Os ativos são para ESCOLHER setor (cadastro e edição de vínculo); a lista
+      // inteira é para NOMEAR setor. Desativar um setor não desfaz o vínculo de
+      // quem já estava nele, então sem os inativos aqui a aba da escala dessa
+      // pessoa apareceria sem nome — e com dois setores desativados seriam duas
+      // abas idênticas e indistinguíveis.
       setDepartments(d.filter((x) => x.active));
+      setTodosSetores(d);
       setEmPlantao(plantoes);
     } catch (err) {
       setLoadError(errorText(err, 'Não foi possível carregar a equipe agora.'));
@@ -639,14 +725,33 @@ export default function AgentesPage() {
       setEditError('Escolha ao menos um setor.');
       return;
     }
+    const alvo = users.find((u) => u.id === editing.id);
+    const nome = alvo?.name ?? 'a pessoa';
+    const saiuDeAlgum = (alvo?.departmentIds ?? []).some((id) => !editing.deptIds.includes(id));
     setSavingDepts(true);
     try {
-      await api(`/admin/users/${editing.id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ departmentIds: editing.deptIds }),
-      });
+      const r = await api<{ releasedConversations: number; shiftEnded: boolean }>(
+        `/admin/users/${editing.id}`,
+        { method: 'PATCH', body: JSON.stringify({ departmentIds: editing.deptIds }) }
+      );
+
+      // Tirar alguém de um setor apaga a escala dela naquele setor e pode
+      // encerrar o plantão em curso. As duas coisas são invisíveis na tela — sem
+      // dizer aqui, o admin que desmarcou por engano e remarcou em seguida acha
+      // que não aconteceu nada e só descobre quando a pessoa não consegue entrar.
+      const partes = [`Setores de ${nome} atualizados.`];
+      if (saiuDeAlgum) partes.push('A escala nos setores removidos foi apagada.');
+      if (r.shiftEnded) partes.push('O plantão em curso foi encerrado.');
+      if (r.releasedConversations > 0) {
+        partes.push(
+          r.releasedConversations === 1
+            ? '1 conversa voltou para a fila.'
+            : `${r.releasedConversations} conversas voltaram para a fila.`
+        );
+      }
+
       setEditing(null);
-      setNotice('Setores atualizados.');
+      setNotice(partes.join(' '));
       await load();
     } catch (err) {
       setEditError(errorText(err, 'Não foi possível salvar os setores agora.'));
@@ -674,16 +779,18 @@ export default function AgentesPage() {
   async function startEditingShift(u: UserRow) {
     setShiftError(null);
     setShiftUser(u);
-    setShiftDias(escalaVazia());
-    setShiftDiasExtras([]);
+    setShiftPorSetor(escalaVaziaPorSetor(u.departmentIds));
+    setShiftExtras({});
+    setShiftSetorAtivo(u.departmentIds[0] ?? '');
     setShiftCarregou(false);
     setShiftLoading(true);
     try {
-      const { dias, diasComVariasFaixas } = escalaDeShifts(
-        await api<ShiftRow[]>(`/admin/users/${u.id}/shifts`)
+      const { porSetor, extrasPorSetor } = escalaDeShifts(
+        await api<ShiftRow[]>(`/admin/users/${u.id}/shifts`),
+        u.departmentIds
       );
-      setShiftDias(dias);
-      setShiftDiasExtras(diasComVariasFaixas);
+      setShiftPorSetor(porSetor);
+      setShiftExtras(extrasPorSetor);
       // só depois de carregar de verdade é que salvar é seguro: um editor vazio
       // por causa de erro de rede substituiria a escala inteira por nada
       setShiftCarregou(true);
@@ -694,27 +801,40 @@ export default function AgentesPage() {
     }
   }
 
-  function changeShiftDia(weekday: number, dia: DiaEscala) {
-    setShiftDias((prev) => prev.map((d, i) => (i === weekday ? dia : d)));
+  function changeShiftDia(departmentId: string, weekday: number, dia: DiaEscala) {
+    setShiftPorSetor((prev) => ({
+      ...prev,
+      [departmentId]: (prev[departmentId] ?? escalaVazia()).map((d, i) =>
+        i === weekday ? dia : d
+      ),
+    }));
   }
 
   async function saveShift() {
     if (!shiftUser || !shiftCarregou) return;
     setShiftError(null);
 
-    if (shiftDias.some((d) => d.ativo && (!d.inicio || !d.fim))) {
+    const entradas = Object.entries(shiftPorSetor);
+
+    if (entradas.some(([, dias]) => dias.some((d) => d.ativo && (!d.inicio || !d.fim)))) {
       setShiftError('Preencha o horário de início e de fim dos dias marcados.');
       return;
     }
 
-    const shifts = shiftDias
-      .map((dia, weekday) => ({ dia, weekday }))
-      .filter(({ dia }) => dia.ativo)
-      .map(({ dia, weekday }) => ({
-        weekday,
-        startMinute: horaParaMinuto(dia.inicio, false),
-        endMinute: horaParaMinuto(dia.fim, true),
-      }));
+    // Vai o conjunto de TODOS os setores, não só o da aba aberta: a API
+    // substitui a escala inteira da pessoa, então mandar um setor por vez
+    // apagaria os outros.
+    const shifts = entradas.flatMap(([departmentId, dias]) =>
+      dias
+        .map((dia, weekday) => ({ dia, weekday }))
+        .filter(({ dia }) => dia.ativo)
+        .map(({ dia, weekday }) => ({
+          departmentId,
+          weekday,
+          startMinute: horaParaMinuto(dia.inicio, false),
+          endMinute: horaParaMinuto(dia.fim, true),
+        }))
+    );
 
     if (shifts.some((s) => s.startMinute === s.endMinute)) {
       setShiftError('Um plantão não pode começar e terminar no mesmo horário.');
@@ -1107,8 +1227,22 @@ export default function AgentesPage() {
       {shiftUser && (
         <ShiftEditor
           user={shiftUser}
-          dias={shiftDias}
-          diasComVariasFaixas={shiftDiasExtras}
+          setores={shiftUser.departmentIds.map((id) => {
+            const setor = todosSetores.find((d) => d.id === id);
+            return {
+              id,
+              // Setor desativado continua aparecendo, e marcado. Bloquear a
+              // edição dele faria o salvamento inteiro falhar (o payload leva
+              // todos os setores da pessoa); escondê-lo apagaria a escala dele
+              // no primeiro "Salvar". A escala fica dormente e volta a valer se
+              // o setor for reativado.
+              name: setor ? (setor.active ? setor.name : `${setor.name} (fora do ar)`) : 'Setor',
+            };
+          })}
+          setorAtivo={shiftSetorAtivo}
+          onSetorChange={setShiftSetorAtivo}
+          porSetor={shiftPorSetor}
+          extrasPorSetor={shiftExtras}
           onChange={changeShiftDia}
           onSave={saveShift}
           onCancel={() => {

@@ -160,6 +160,16 @@ export async function update(
         data: departmentIds.map((departmentId) => ({ userId: id, departmentId })),
       });
 
+      // A escala do setor que ele deixou vai junto. Escala em setor de que a
+      // pessoa não faz mais parte é escala que mente: ela apareceria escalada
+      // para o CT no painel, entraria de plantão por causa dessa faixa e não
+      // receberia chamado nenhum de lá, porque o rodízio exige o vínculo. Quem
+      // devolver a pessoa ao setor cadastra a escala de novo — no mesmo lugar
+      // em que refaz o vínculo.
+      await tx.shift.deleteMany({
+        where: { tenantId, userId: id, departmentId: { notIn: departmentIds } },
+      });
+
       // Sair de um setor devolve para a fila o que ficou fora do novo escopo.
       // Sem isto a conversa continua com `assignedUserId` de quem saiu: some da
       // fila de quem ficou no setor, segue em "minhas conversas" de quem não

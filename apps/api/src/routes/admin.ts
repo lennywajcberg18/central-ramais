@@ -20,7 +20,7 @@ import {
   closeConversation,
 } from '../services/lifecycle.service';
 import { computeMetrics } from '../services/metrics.service';
-import { replaceSchedule } from '../services/shift.service';
+import { reevaluateShift, reofferConversations, replaceSchedule } from '../services/shift.service';
 import { buildPrefillText, generateEntryCode, generateSlug } from '../utils/ids';
 import { dayRangeInZone } from '../utils/shiftClock';
 import { normalizeKeyword } from '../utils/text';
@@ -318,7 +318,38 @@ router.patch('/admin/users/:id', async (req, res, next) => {
       departmentIds,
     });
     if (result.count === 0) throw new NotFoundError();
-    res.json({ ok: true, releasedConversations: result.releasedConversations });
+
+    // Tirar alguém de um setor apaga a escala dela naquele setor, e a escala é
+    // o que sustenta o plantão em curso. Sem reavaliar, quem perdeu a última
+    // faixa continuaria com a sessão aberta e com acesso por até 16 horas,
+    // regido por uma escala que não existe mais. É o mesmo passo que
+    // `replaceSchedule` dá depois de salvar a escala — pelo mesmo motivo.
+    //
+    // O `endShift` de dentro solta MAIS conversas que as do `users.update` (que
+    // só soltou as que ficaram fora do novo escopo de setores) e devolve quantas
+    // foram. Descartar esse número faria a tela dizer "0 conversas devolvidas"
+    // enquanto duas voltaram para a fila e a pessoa foi deslogada.
+    let encerrouPlantao = false;
+    let devolvidas = result.releasedConversations;
+    if (departmentIds) {
+      const fim = await reevaluateShift(tenantId, target.id);
+      encerrouPlantao = fim !== null;
+      devolvidas += fim?.releasedConversations ?? 0;
+    }
+
+    // As conversas soltas pelo `users.update` — as que ficaram fora do novo
+    // escopo — nunca eram reoferecidas: ficavam em `open`, que é o único estado
+    // que o job de inatividade não varre, mesmo com um colega de plantão no
+    // setor. É o contrato que o comentário de `reofferConversations` descreve e
+    // que esta rota nunca cumpriu; com o `endShift` agora reoferecendo as dele,
+    // deixar metade sem reoferta seria pior que os dois lados iguais.
+    await reofferConversations(tenantId, result.releasedConversationIds);
+
+    res.json({
+      ok: true,
+      releasedConversations: devolvidas,
+      shiftEnded: encerrouPlantao,
+    });
   } catch (err) {
     next(err);
   }
@@ -364,6 +395,7 @@ function linkToJson(link: Awaited<ReturnType<typeof entryLinks.list>>[number]) {
 
 const shiftEntrySchema = z
   .object({
+    departmentId: z.string().uuid('setor inválido na escala'),
     weekday: z.number().int().min(0).max(6),
     // minutos desde 00:00; 1440 é meia-noite do dia seguinte, o que permite
     // cadastrar tanto "07:00 às 19:00" quanto "19:00 às 07:00" (vira o dia)
@@ -374,33 +406,44 @@ const shiftEntrySchema = z
 
 const MAX_FAIXAS_POR_DIA = 3;
 
+// Teto só do payload, para uma requisição absurda não virar milhares de linhas.
+// Não é regra de negócio: quem estiver em mais setores que isto tem um problema
+// de cadastro, não de escala.
+const MAX_SETORES_NA_ESCALA = 10;
+
 const shiftsPutSchema = z.object({
   // O teto de 21 sozinho prometia "três por dia" e não entregava: 21 faixas no
   // mesmo dia passavam, e faixas idênticas também. O editor do painel só mostra a
   // primeira faixa de cada dia, então o excedente virava estado invisível que o
   // admin não conseguia ver nem remover — e o plantão passava a ser regido por uma
   // escala que ninguém enxerga.
+  //
+  // Com escala por setor a contagem passou a ser por (dia, SETOR), e o teto do
+  // array acompanha: três faixas na segunda no CT e três na segunda na Recepção
+  // são seis faixas legítimas no mesmo dia. Contar só por dia transformaria o
+  // caso normal de quem cobre dois setores em erro de validação.
   shifts: z
     .array(shiftEntrySchema)
-    .max(MAX_FAIXAS_POR_DIA * 7, 'no máximo três faixas de plantão por dia')
+    .max(MAX_FAIXAS_POR_DIA * 7 * MAX_SETORES_NA_ESCALA, 'escala longa demais')
     .superRefine((faixas, ctx) => {
-      const porDia = new Map<number, number>();
+      const porDiaESetor = new Map<string, number>();
       const vistas = new Set<string>();
       for (const f of faixas) {
-        const quantas = (porDia.get(f.weekday) ?? 0) + 1;
-        porDia.set(f.weekday, quantas);
+        const chave = `${f.weekday}:${f.departmentId}`;
+        const quantas = (porDiaESetor.get(chave) ?? 0) + 1;
+        porDiaESetor.set(chave, quantas);
         if (quantas > MAX_FAIXAS_POR_DIA) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
-            message: 'no máximo três faixas de plantão por dia',
+            message: 'no máximo três faixas de plantão por dia em cada setor',
           });
           return;
         }
-        const assinatura = `${f.weekday}:${f.startMinute}:${f.endMinute}`;
+        const assinatura = `${chave}:${f.startMinute}:${f.endMinute}`;
         if (vistas.has(assinatura)) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
-            message: 'há duas faixas de plantão idênticas no mesmo dia',
+            message: 'há duas faixas de plantão idênticas no mesmo dia e setor',
           });
           return;
         }
@@ -430,6 +473,23 @@ router.put('/admin/users/:id/shifts', async (req, res, next) => {
     const user = await users.findById(tenantId, req.params.id);
     if (!user) throw new NotFoundError();
     if (user.role !== 'agent') throw new BadRequestError('só atendentes têm escala de plantão');
+
+    // Escalar alguém para um setor de que ele não faz parte cria uma escala que
+    // nunca vale nada: o rodízio exige o vínculo em `user_departments`, então a
+    // pessoa entraria de plantão e não receberia chamado nenhum — sem erro, sem
+    // aviso, e com a tela do admin mostrando que ela está escalada. Conferir
+    // aqui é o que impede a escala de mentir.
+    //
+    // Cobre o cross-tenant de tabela: `departmentIdsOf` filtra o usuário por
+    // tenant, e o vínculo em si já nasce validado por `resolveDepartmentIds`.
+    // Um setor de outro hospital não está entre os do atendente e cai aqui como
+    // "não é deste atendente" — 400, sem revelar que o setor existe.
+    const setoresDoAtendente = new Set(await users.departmentIdsOf(tenantId, user.id));
+    for (const faixa of parsed.data.shifts) {
+      if (!setoresDoAtendente.has(faixa.departmentId)) {
+        throw new BadRequestError('a escala tem um setor que não é deste atendente');
+      }
+    }
 
     // Substituir a escala e reavaliar o plantão em curso vão juntas: separadas,
     // um login que começasse no meio criava a sessão já depois da reavaliação e

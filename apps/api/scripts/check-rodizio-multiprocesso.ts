@@ -67,10 +67,29 @@ async function main() {
 
   let empates = 0;
   try {
+    // Escala integral em TODOS os setores de cada um: a escala é por setor, e
+    // cobrir só um tiraria o rodízio dos demais do ar durante o check.
+    const setores = await prisma.userDepartment.findMany({
+      where: { userId: { in: envolvidos }, department: { tenantId } },
+      select: { userId: true, departmentId: true },
+    });
+    // Sem setor não há escala, sem escala não há plantão, e sem plantão os dois
+    // processos não disputam nada: o check diria PASSOU tendo medido nada.
+    const semSetor = envolvidos.filter((id) => !setores.some((s) => s.userId === id));
+    if (semSetor.length > 0) {
+      throw new Error(`atendentes sem setor (${semSetor.join(', ')}): o check mediria nada`);
+    }
     await prisma.shift.deleteMany({ where: { tenantId, userId: { in: envolvidos } } });
     await prisma.shift.createMany({
-      data: envolvidos.flatMap((userId) =>
-        Array.from({ length: 7 }, (_, weekday) => ({ tenantId, userId, weekday, startMinute: 0, endMinute: 1440 }))
+      data: setores.flatMap(({ userId, departmentId }) =>
+        Array.from({ length: 7 }, (_, weekday) => ({
+          tenantId,
+          userId,
+          departmentId,
+          weekday,
+          startMinute: 0,
+          endMinute: 1440,
+        }))
       ),
     });
     await prisma.shiftSession.deleteMany({ where: { tenantId, userId: { in: envolvidos } } });
