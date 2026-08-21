@@ -217,6 +217,16 @@ export async function assignToIfOnShiftEm(
                   AND s.tenant_id = u.tenant_id
                   AND s.ended_at IS NULL
                   AND s.ends_at > ${at}
+                 -- de pé NESTE setor, não só de plantão. É a gêmea do filtro em
+                 -- users.availableAgentsForDepartment: as duas descrevem a mesma
+                 -- regra, uma no Prisma e outra aqui, e mudar só uma faz este
+                 -- UPDATE voltar com count 0 sem erro nenhum.
+                 JOIN shift_session_departments ssd
+                   ON ssd.shift_session_id = s.id
+                  AND ssd.tenant_id = s.tenant_id
+                  AND ssd.department_id = ${departmentId}
+                  AND ssd.ended_at IS NULL
+                  AND ssd.ends_at > ${at}
                 WHERE u.id = ${userId}
                   AND u.tenant_id = ${tenantId}
                   AND u.active
@@ -301,6 +311,43 @@ export function listOpenAssignedTo(
   return client.conversation.findMany({
     where: { tenantId, assignedUserId: userId, status: { in: ACTIVE_STATUSES } },
     select: { id: true },
+  });
+}
+
+// As duas irmãs por setor. Sair do plantão de UM setor não pode devolver para a
+// fila as conversas dos outros setores em que a pessoa continua de plantão — o
+// externo receberia aviso de troca de atendente sem nada ter mudado para ele.
+export function listOpenAssignedToInDepartment(
+  tenantId: string,
+  userId: string,
+  departmentId: string,
+  client: Prisma.TransactionClient = prisma
+) {
+  return client.conversation.findMany({
+    where: {
+      tenantId,
+      assignedUserId: userId,
+      departmentId,
+      status: { in: ACTIVE_STATUSES },
+    },
+    select: { id: true },
+  });
+}
+
+export function releaseFromUserInDepartment(
+  tenantId: string,
+  userId: string,
+  departmentId: string,
+  client: Prisma.TransactionClient = prisma
+) {
+  return client.conversation.updateMany({
+    where: {
+      tenantId,
+      assignedUserId: userId,
+      departmentId,
+      status: { in: ACTIVE_STATUSES },
+    },
+    data: { status: 'open', assignedUserId: null, assignedAt: null },
   });
 }
 

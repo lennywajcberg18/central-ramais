@@ -1,5 +1,5 @@
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
   // A Vercel roda as funções em Amazon Linux com OpenSSL 3, e o Prisma escolhe o
   // motor de query pelo sistema onde o `generate` rodou. Sem declarar o alvo, o
   // build gera só o binário da máquina que buildou e a função quebra no primeiro
@@ -110,6 +110,7 @@ model Tenant {
   conversations    Conversation[]
   shifts           Shift[]
   shiftSessions    ShiftSession[]
+  coberturas       ShiftSessionDepartment[]
   internalThreads  InternalThread[]
   internalMessages InternalMessage[]
 
@@ -143,13 +144,14 @@ model Department {
   sortOrder Int      @default(0) @map("sort_order")
   createdAt DateTime @default(now()) @map("created_at")
 
-  tenant          Tenant                @relation(fields: [tenantId], references: [id])
+  tenant          Tenant                   @relation(fields: [tenantId], references: [id])
   users           UserDepartment[]
   entryLinks      EntryLinkDepartment[]
   conversations   Conversation[]
   shifts          Shift[]
-  threadsSent     InternalThread[]      @relation("threadFrom")
-  threadsReceived InternalThread[]      @relation("threadTo")
+  coberturas      ShiftSessionDepartment[]
+  threadsSent     InternalThread[]         @relation("threadFrom")
+  threadsReceived InternalThread[]         @relation("threadTo")
 
   @@unique([tenantId, menuKey])
   @@index([tenantId, active])
@@ -168,9 +170,9 @@ model User {
   lastSeenAt   DateTime?    @map("last_seen_at")
   createdAt    DateTime     @default(now()) @map("created_at")
 
-  tenant        Tenant           @relation(fields: [tenantId], references: [id])
-  departments   UserDepartment[]
-  conversations Conversation[]
+  tenant           Tenant            @relation(fields: [tenantId], references: [id])
+  departments      UserDepartment[]
+  conversations    Conversation[]
   shifts           Shift[]
   shiftSessions    ShiftSession[]
   internalThreads  InternalThread[]
@@ -220,13 +222,49 @@ model ShiftSession {
   endedAt   DateTime?       @map("ended_at")
   endReason ShiftEndReason? @map("end_reason")
 
-  tenant Tenant @relation(fields: [tenantId], references: [id])
-  user   User   @relation(fields: [userId], references: [id])
+  tenant     Tenant                   @relation(fields: [tenantId], references: [id])
+  user       User                     @relation(fields: [userId], references: [id])
+  coberturas ShiftSessionDepartment[]
 
   // o job varre por sessões abertas vencidas; o middleware busca a do token
   @@index([tenantId, userId, endedAt])
   @@index([endedAt, endsAt])
   @@map("shift_sessions")
+}
+
+// Em quais setores este plantão está de pé, e até quando em cada um.
+//
+// O plantão continua sendo UM por pessoa — é o que o token carrega, é o que o
+// botão "meu plantão acabou" encerra, e é o que o índice parcial de login duplo
+// protege. O que muda é que ele deixa de valer para todos os setores da pessoa
+// por tabela e passa a valer para os que a escala disser, um a um.
+//
+// Cada setor tem o seu `endsAt` porque a escala é por setor: quem faz CT das 7h
+// às 13h e Recepção das 13h às 19h para de receber do CT ao meio-dia e meia sem
+// que o plantão inteiro acabe. Fundir isso numa hora só é o que o relógio do
+// projeto faz de propósito (`minutesLeftInShift` cola faixas encostadas, senão a
+// escala 00:00–24:00 desloga a pessoa toda meia-noite) — e é justamente o que
+// não pode valer entre setores diferentes.
+model ShiftSessionDepartment {
+  id             String    @id @default(uuid())
+  tenantId       String    @map("tenant_id")
+  shiftSessionId String    @map("shift_session_id")
+  departmentId   String    @map("department_id")
+  endsAt         DateTime  @map("ends_at")
+  endedAt        DateTime? @map("ended_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  tenant     Tenant       @relation(fields: [tenantId], references: [id])
+  session    ShiftSession @relation(fields: [shiftSessionId], references: [id], onDelete: Cascade)
+  department Department   @relation(fields: [departmentId], references: [id])
+
+  // "quem está de plantão neste setor agora" — a consulta do rodízio, da
+  // contagem por setor e do aviso de setor descoberto
+  @@index([tenantId, departmentId, endedAt])
+  @@index([shiftSessionId, endedAt])
+  // uma cobertura aberta por (sessão, setor) vive no índice parcial
+  // `cobertura_aberta_unica`, na migration — o Prisma não modela índice com WHERE
+  @@map("shift_session_departments")
 }
 
 model UserDepartment {
@@ -243,15 +281,15 @@ model UserDepartment {
 // Conversa entre dois ramais do hospital. Não tem externo envolvido e não passa
 // pelo WhatsApp: é a Enfermagem perguntando ao Faturamento, pela plataforma.
 model InternalThread {
-  id                 String               @id @default(uuid())
-  tenantId           String               @map("tenant_id")
-  fromDepartmentId   String               @map("from_department_id")
-  toDepartmentId     String               @map("to_department_id")
-  status             InternalThreadStatus @default(open)
-  createdByUserId    String               @map("created_by_user_id")
-  createdAt          DateTime             @default(now()) @map("created_at")
-  lastMessageAt      DateTime             @default(now()) @map("last_message_at")
-  closedAt           DateTime?            @map("closed_at")
+  id               String               @id @default(uuid())
+  tenantId         String               @map("tenant_id")
+  fromDepartmentId String               @map("from_department_id")
+  toDepartmentId   String               @map("to_department_id")
+  status           InternalThreadStatus @default(open)
+  createdByUserId  String               @map("created_by_user_id")
+  createdAt        DateTime             @default(now()) @map("created_at")
+  lastMessageAt    DateTime             @default(now()) @map("last_message_at")
+  closedAt         DateTime?            @map("closed_at")
 
   tenant         Tenant            @relation(fields: [tenantId], references: [id])
   fromDepartment Department        @relation("threadFrom", fields: [fromDepartmentId], references: [id])
@@ -283,20 +321,20 @@ model InternalMessage {
 }
 
 model EntryLink {
-  id                String        @id @default(uuid())
-  tenantId          String        @map("tenant_id")
-  slug              String        @unique
-  entryCode         String        @map("entry_code")
-  kind              EntryLinkKind
-  label             String
-  holderNote        String?       @map("holder_note")
-  prefillText       String        @map("prefill_text")
-  active            Boolean       @default(true)
-  revokedAt         DateTime?     @map("revoked_at")
-  revokedByUserId   String?       @map("revoked_by_user_id")
-  useCount          Int           @default(0) @map("use_count")
-  createdAt         DateTime      @default(now()) @map("created_at")
-  createdByUserId   String?       @map("created_by_user_id")
+  id              String        @id @default(uuid())
+  tenantId        String        @map("tenant_id")
+  slug            String        @unique
+  entryCode       String        @map("entry_code")
+  kind            EntryLinkKind
+  label           String
+  holderNote      String?       @map("holder_note")
+  prefillText     String        @map("prefill_text")
+  active          Boolean       @default(true)
+  revokedAt       DateTime?     @map("revoked_at")
+  revokedByUserId String?       @map("revoked_by_user_id")
+  useCount        Int           @default(0) @map("use_count")
+  createdAt       DateTime      @default(now()) @map("created_at")
+  createdByUserId String?       @map("created_by_user_id")
 
   tenant           Tenant                @relation(fields: [tenantId], references: [id])
   departments      EntryLinkDepartment[]

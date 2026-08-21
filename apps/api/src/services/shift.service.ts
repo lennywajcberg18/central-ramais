@@ -24,8 +24,32 @@ function capShiftEnd(fim: Date, at: Date): Date {
   return fim < teto ? fim : teto;
 }
 
+// Põe o plantão de pé nos setores que a escala cobre agora.
+//
+// O teto de 16h vale por setor também, e ancorado no INÍCIO do plantão, igual ao
+// da sessão: sem isso a cobertura de um setor sobreviveria ao token que a
+// sustenta, e o rodízio entregaria conversa para quem já não consegue abrir a
+// tela.
+async function abrirCoberturasDaEscala(
+  tenantId: string,
+  shiftSessionId: string,
+  porSetor: Map<string, Date>,
+  inicioDoPlantao: Date
+): Promise<void> {
+  const setores = [...porSetor].map(([departmentId, fimDoSetor]) => ({
+    departmentId,
+    endsAt: capShiftEnd(fimDoSetor, inicioDoPlantao),
+  }));
+  if (setores.length > 0) {
+    await shifts.abrirCoberturas(tenantId, shiftSessionId, setores);
+  }
+}
+
 interface Cobertura {
-  // até quando a escala cobre o instante pedido; null = não cobre
+  // até quando a escala cobre o instante pedido, POR SETOR; setor ausente do
+  // mapa é setor que a escala não cobre agora
+  porSetor: Map<string, Date>;
+  // o mais tarde entre os setores — é o fim do plantão como um todo
   fim: Date | null;
   temEscala: boolean;
   proxima: string | null;
@@ -36,9 +60,44 @@ async function coberturaAtual(tenantId: string, userId: string, at: Date): Promi
   const tenant = await tenants.findById(tenantId);
   const timezone = tenant?.timezone || DEFAULT_TIMEZONE;
 
+  // Setor a setor, e nunca a escala toda de uma vez. `minutesLeftInShift` funde
+  // faixas que se encostam — é o que impede a escala 00:00–24:00 de deslogar a
+  // pessoa toda meia-noite —, e entre setores diferentes essa fusão mente: CT
+  // das 7h às 13h somado a Recepção das 13h às 19h daria "de plantão no CT até
+  // as 19h". Agrupar antes de calcular é o que mantém a fusão onde ela ajuda e
+  // a tira de onde ela atrapalha.
+  const porEscala = new Map<string, typeof escala>();
+  for (const faixa of escala) {
+    const lista = porEscala.get(faixa.departmentId) ?? [];
+    lista.push(faixa);
+    porEscala.set(faixa.departmentId, lista);
+  }
+
+  const porSetor = new Map<string, Date>();
+  for (const [departmentId, faixas] of porEscala) {
+    const fimDoSetor = shiftEndsAt(faixas, timezone, at);
+    if (fimDoSetor) porSetor.set(departmentId, fimDoSetor);
+  }
+
+  // O fim do PLANTÃO continua saindo da escala inteira, e não do maior fim por
+  // setor. A diferença derruba gente no meio do turno: quem faz Cardiologia das
+  // 7h às 13h e Recepção das 13h às 19h, entrando às 8h, tem só a Cardiologia
+  // "acontecendo agora" — a faixa da Recepção ainda não começou e não aparece em
+  // `porSetor`. O maior fim por setor daria 13h, o job encerraria o plantão no
+  // meio do dia e devolveria para a fila até as conversas da Recepção.
+  //
+  // `minutesLeftInShift` sobre a escala toda enxerga a emenda: acha a faixa que
+  // contém agora e estende enquanto houver outra começando até esse fim. É a
+  // mesma extensão que impede a escala 00:00–24:00 de deslogar a pessoa toda
+  // meia-noite — aqui ela sustenta a passagem de um setor para o outro.
+  const fim = shiftEndsAt(escala, timezone, at);
+
   return {
-    fim: shiftEndsAt(escala, timezone, at),
+    porSetor,
+    fim,
     temEscala: escala.length > 0,
+    // A próxima janela continua sendo da pessoa, não de um setor: quem foi
+    // recusado quer saber quando volta a poder entrar, em qualquer setor.
     proxima: describeNextWindow(escala, localNow(timezone, at)),
   };
 }
@@ -71,7 +130,7 @@ export async function reevaluateShift(
   const abertas = await shifts.listOpenSessionsForUser(tenantId, userId);
   if (abertas.length === 0) return null;
 
-  const { fim } = await coberturaAtual(tenantId, userId, new Date());
+  const { fim, porSetor } = await coberturaAtual(tenantId, userId, new Date());
   if (!fim) {
     return await endShift(tenantId, userId, 'admin');
   }
@@ -83,8 +142,83 @@ export async function reevaluateShift(
     if (novoFim.getTime() !== aberta.endsAt.getTime()) {
       await shifts.updateSessionEnd(tenantId, aberta.id, novoFim);
     }
+
+    // A cobertura acompanha a escala nova, setor a setor. Sem isto, salvar a
+    // escala reajustaria só o fim do plantão inteiro e a pessoa continuaria
+    // recebendo do setor de onde o admin acabou de tirá-la — até o turno acabar.
+    const coberturas = await shifts.listCoberturasAbertas(tenantId, aberta.id);
+    for (const cobertura of coberturas) {
+      const fimDoSetor = porSetor.get(cobertura.departmentId);
+      if (!fimDoSetor) {
+        // Setor que a escala não cobre mais: fecha a cobertura e devolve para a
+        // fila só as conversas DAQUELE setor — as dos outros setores dela
+        // continuam em andamento.
+        await encerrarCoberturaDeUmSetor(tenantId, aberta.id, cobertura.id, userId, cobertura.departmentId);
+        continue;
+      }
+      const novoFimDoSetor = capShiftEnd(fimDoSetor, aberta.startedAt);
+      if (novoFimDoSetor.getTime() !== cobertura.endsAt.getTime()) {
+        await shifts.ajustarFimDaCobertura(tenantId, cobertura.id, novoFimDoSetor);
+      }
+    }
+
+    // Escala nova pode ter ACRESCENTADO um setor.
+    await abrirCoberturasDaEscala(tenantId, aberta.id, porSetor, aberta.startedAt);
   }
   return null;
+}
+
+// Tira o plantão de um setor só, deixando os outros de pé.
+//
+// As conversas devolvidas são as daquele setor — `releaseFromUser` solta todas
+// as da pessoa, sem filtro, e usá-lo aqui devolveria para a fila conversas de um
+// setor em que ela continua de plantão, com o externo recebendo aviso à toa.
+async function encerrarCoberturaDeUmSetor(
+  tenantId: string,
+  shiftSessionId: string,
+  coberturaId: string,
+  userId: string,
+  departmentId: string,
+  // Só o job passa isto: é a trava que impede a varredura de encerrar uma
+  // cobertura que o admin esticou entre a leitura e a escrita. Quem chega por
+  // mudança de escala NÃO passa — ali o setor deixou de existir na escala, e a
+  // cobertura tem que cair mesmo com hora futura.
+  vencidaEm?: Date
+): Promise<void> {
+  const soltas = await prisma.$transaction(async (tx) => {
+    // Mesma ordem de travas de todo caminho que encerra plantão: a linha do
+    // usuário primeiro, sem escrever nela — é o que impede o ciclo ABBA com o
+    // rodízio e com `endShift`. Ver o comentário longo em `expireDueShifts`.
+    await tx.$queryRaw`
+      SELECT 1 FROM users WHERE id = ${userId} AND tenant_id = ${tenantId} FOR UPDATE`;
+
+    const fechada = await tx.shiftSessionDepartment.updateMany({
+      where: {
+        id: coberturaId,
+        tenantId,
+        shiftSessionId,
+        endedAt: null,
+        ...(vencidaEm ? { endsAt: { lte: vencidaEm } } : {}),
+      },
+      data: { endedAt: new Date() },
+    });
+    // Perdeu a corrida para o job ou para o botão, ou o admin esticou a escala
+    // entre a varredura e esta escrita: quem fechou já soltou, e no caso do
+    // esticão não há nada a soltar.
+    if (fechada.count === 0) return [] as string[];
+
+    const emAndamento = await conversations.listOpenAssignedToInDepartment(
+      tenantId,
+      userId,
+      departmentId,
+      tx
+    );
+    await conversations.releaseFromUserInDepartment(tenantId, userId, departmentId, tx);
+    return emAndamento.map((c) => c.id);
+  }, LIMITES_DE_TRANSACAO);
+
+  // Fora da transação: reoferecer manda WhatsApp, e efeito externo não se desfaz.
+  await reofferConversations(tenantId, soltas);
 }
 
 // Abre (ou reaproveita) o plantão do atendente. Reaproveitar importa: entrar
@@ -107,6 +241,17 @@ export async function openShiftForUser(
     // nenhum enquanto o plantão dela estivesse aberto.
     const aindaCoberto = await coberturaAtual(tenantId, userId, agora);
     if (aindaCoberto.fim) {
+      // Reconciliar a cobertura no relogin, e não só na criação: a escala pode
+      // ter ganhado um setor desde que o plantão começou, e sem isto a pessoa
+      // ficaria de plantão sem receber nada do setor novo até o turno seguinte.
+      // `abrirCoberturas` ignora repetido pelo índice parcial, então reabrir o
+      // que já está aberto não custa nada.
+      await abrirCoberturasDaEscala(
+        tenantId,
+        aberta.id,
+        aindaCoberto.porSetor,
+        aberta.startedAt
+      );
       return { ok: true, session: aberta, becameAvailable: false };
     }
     await endShift(tenantId, userId, 'admin');
@@ -118,12 +263,13 @@ export async function openShiftForUser(
     await endShift(tenantId, userId, 'schedule');
   }
 
-  const { fim, temEscala, proxima } = await coberturaAtual(tenantId, userId, agora);
+  const { fim, porSetor, temEscala, proxima } = await coberturaAtual(tenantId, userId, agora);
   if (!fim) {
     return { ok: false, hasSchedule: temEscala, nextWindow: proxima };
   }
 
   const session = await shifts.createSession(tenantId, userId, capShiftEnd(fim, agora));
+  await abrirCoberturasDaEscala(tenantId, session.id, porSetor, session.startedAt);
 
   // Reconferência DEPOIS de criar, e é ela que substitui a antiga fila em
   // memória. A escala foi lida antes desta linha; se o admin salvou uma escala
@@ -235,6 +381,20 @@ export async function endShift(
     // recria o deadlock 40P01 que derrubava o fim de plantão e o login na virada
     // de turno.
     await users.setAvailability(tenantId, userId, 'offline', tx);
+
+    // As coberturas fecham ANTES das sessões: fechar a sessão primeiro deixaria,
+    // entre as duas escritas, uma cobertura de pé apontando para um plantão que
+    // já acabou — e é a cobertura, não a sessão, que o rodízio consulta. Dentro
+    // da mesma transação a janela não existe, mas a ordem é a que faz sentido se
+    // um dia alguém separar as duas.
+    const abertas = await tx.shiftSession.findMany({
+      where: { tenantId, userId, endedAt: null },
+      select: { id: true },
+    });
+    for (const s of abertas) {
+      await shifts.fecharCoberturasDaSessao(tenantId, s.id, tx);
+    }
+
     const f = await shifts.closeSessionsOfUser(tenantId, userId, reason, tx);
     const s = await releaseUserWork(tenantId, userId, tx);
     return { fechadas: f, soltas: s };
@@ -247,12 +407,79 @@ export async function endShift(
   return { closed: fechadas.count, releasedConversations: soltas.count };
 }
 
+// Reabre a cobertura dos setores que a escala voltou a cobrir, para quem já está
+// de plantão. É a contrapartida da varredura de coberturas vencidas: sem ela, a
+// segunda faixa do dia no mesmo setor nunca acontece.
+//
+// Percorre as sessões ABERTAS, que são poucas por definição — é a gente que está
+// de plantão neste minuto. `abrirCoberturas` ignora o que já está aberto (índice
+// parcial `cobertura_aberta_unica`), então na imensa maioria dos minutos isto é
+// uma leitura por pessoa e nenhuma escrita.
+async function reabrirCoberturasRetomadas(tenantId: string, at: Date): Promise<void> {
+  const abertas = await prisma.shiftSession.findMany({
+    where: { tenantId, endedAt: null, endsAt: { gt: at } },
+    select: { id: true, userId: true, startedAt: true },
+  });
+
+  for (const sessao of abertas) {
+    const { porSetor } = await coberturaAtual(tenantId, sessao.userId, at);
+    if (porSetor.size === 0) continue;
+    await abrirCoberturasDaEscala(tenantId, sessao.id, porSetor, sessao.startedAt);
+  }
+}
+
 // Varredura do job: fecha o que passou da hora, hospital por hospital.
+//
+// Duas camadas, nesta ordem. Primeiro as COBERTURAS vencidas — quem sai do CT ao
+// meio-dia e meia mas continua na Recepção até as 19h perde só o CT, e só as
+// conversas do CT voltam para a fila. Depois as SESSÕES vencidas, que é o fim do
+// plantão inteiro. A ordem importa: encerrar a sessão primeiro fecharia todas as
+// coberturas junto e a varredura de setor não teria mais o que devolver por
+// setor — soltaria tudo de uma vez, com o externo do outro setor recebendo aviso
+// de troca sem nada ter mudado para ele.
 export async function expireDueShifts(at: Date = new Date()): Promise<number> {
   let encerrados = 0;
   const todos = await tenants.listIds();
 
   for (const tenant of todos) {
+    const vencidasPorSetor = await shifts.listCoberturasVencidas(tenant.id, at);
+    for (const cobertura of vencidasPorSetor) {
+      // Sessão já encerrada leva as coberturas dela junto, na mesma transação —
+      // se ainda houver linha aberta aqui, é resto de corrida e o `endShift`
+      // seguinte limpa. Devolver conversa por causa dela seria devolver duas
+      // vezes.
+      if (cobertura.session.endedAt !== null) continue;
+      try {
+        await encerrarCoberturaDeUmSetor(
+          tenant.id,
+          cobertura.shiftSessionId,
+          cobertura.id,
+          cobertura.session.userId,
+          cobertura.departmentId,
+          at
+        );
+      } catch (err) {
+        console.error(`[shift-job] falha ao encerrar a cobertura ${cobertura.id}:`, err);
+      }
+    }
+
+    // E o outro lado: cobertura que a escala VOLTOU a cobrir.
+    //
+    // Escala partida é o caso normal — `MAX_FAIXAS_POR_DIA = 3` existe para
+    // isso. Quem faz Cardiologia das 7h às 12h e de novo das 14h às 19h tem a
+    // cobertura fechada ao meio-dia pela varredura acima, e sem esta parte nada
+    // a reabre às 14h: a pessoa fica de plantão sem receber nada da Cardiologia
+    // pelo resto do dia, com o painel mostrando o setor como "sem ninguém" e
+    // ninguém entendendo por quê.
+    //
+    // Só ABRE. Fechar é da varredura anterior, que tem a trava do `endsAt` —
+    // misturar as duas faria esta reabrir no mesmo minuto o que aquela fechou.
+    try {
+      await reabrirCoberturasRetomadas(tenant.id, at);
+    } catch (err) {
+      console.error(`[shift-job] falha ao reabrir coberturas do tenant ${tenant.id}:`, err);
+    }
+
     const vencidas = await shifts.listExpiredSessions(tenant.id, at);
     for (const session of vencidas) {
       try {

@@ -76,7 +76,21 @@ export function availableAgentsForDepartment(
       active: true,
       availability: 'available',
       departments: { some: { departmentId } },
-      shiftSessions: { some: { endedAt: null, endsAt: { gt: new Date() } } },
+      // Plantão aberto E de pé NESTE setor. Só "sessão aberta" era o que ligava
+      // a pessoa em todos os setores dela de uma vez; a cobertura é o que diz
+      // onde ela está agora.
+      //
+      // A gêmea deste filtro está no SQL cru de `conversations.assignToIfOnShiftEm`,
+      // que é a trava atômica da atribuição. Mudar um sem o outro não dá erro:
+      // o UPDATE volta com count 0, `tryAssign` devolve false e a conversa fica
+      // parada em `open` — o único estado que nenhum job varre.
+      shiftSessions: {
+        some: {
+          endedAt: null,
+          endsAt: { gt: new Date() },
+          coberturas: { some: { departmentId, endedAt: null, endsAt: { gt: new Date() } } },
+        },
+      },
     },
   });
 }
@@ -128,6 +142,22 @@ export async function create(tenantId: string, input: CreateUserInput) {
       ...data,
       departments: { create: departmentIds.map((departmentId) => ({ departmentId })) },
     },
+  });
+}
+
+// Fecha a cobertura por setor de TODOS os plantões abertos da pessoa.
+//
+// Mora aqui, e não no shift.service, porque quem desativa alguém está no meio de
+// uma transação deste repositório e não pode chamar o serviço de volta — mas a
+// regra é a mesma do `endShift`: cobertura não sobrevive ao plantão dela.
+async function fecharCoberturasDoUsuario(
+  tx: Prisma.TransactionClient,
+  tenantId: string,
+  userId: string
+): Promise<void> {
+  await tx.shiftSessionDepartment.updateMany({
+    where: { tenantId, endedAt: null, session: { userId, endedAt: null } },
+    data: { endedAt: new Date() },
   });
 }
 
@@ -193,6 +223,12 @@ export async function update(
       // Mesma trava do DELETE: desativar por aqui também tem que encerrar o
       // plantão, senão o painel segue mostrando como "de plantão agora" alguém
       // que perdeu o acesso — e a reativação devolveria a sessão antiga.
+      //
+      // A cobertura por setor cai junto. Fechar só a sessão deixa linhas abertas
+      // apontando para um plantão morto: elas não servem a ninguém (toda
+      // consulta exige a sessão aberta), mas a varredura do job as relê a cada
+      // minuto para sempre, num conjunto que só cresce.
+      await fecharCoberturasDoUsuario(tx, tenantId, id);
       await tx.shiftSession.updateMany({
         where: { tenantId, userId: id, endedAt: null },
         data: { endedAt: new Date(), endReason: 'admin' },
@@ -218,7 +254,9 @@ export function deactivate(tenantId: string, id: string): Promise<WriteUserResul
     }
 
     // Desativar encerra o plantão junto: sessão aberta de quem não existe mais
-    // continuaria contando como gente dentro do hospital.
+    // continuaria contando como gente dentro do hospital. A cobertura por setor
+    // fecha antes, pelo mesmo motivo do PATCH.
+    await fecharCoberturasDoUsuario(tx, tenantId, id);
     await tx.shiftSession.updateMany({
       where: { tenantId, userId: id, endedAt: null },
       data: { endedAt: new Date(), endReason: 'admin' },

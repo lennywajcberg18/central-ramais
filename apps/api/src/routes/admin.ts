@@ -501,11 +501,17 @@ router.put('/admin/users/:id/shifts', async (req, res, next) => {
   }
 });
 
-// Quem está de plantão agora — o admin precisa ver o hospital coberto.
-router.get('/admin/shift-sessions', async (req, res, next) => {
+// Quem está de plantão agora, SETOR A SETOR — o admin precisa ver o hospital
+// coberto, e "coberto" é uma pergunta por setor: cinco pessoas de plantão não
+// dizem nada se as cinco estão na Recepção e o CT está vazio.
+//
+// Substituiu `/admin/shift-sessions`, que listava as pessoas com os setores
+// DELAS. Isso passou a mentir quando o plantão virou por setor: quem cobre CT e
+// Recepção mas está escalada só no CT hoje aparecia cobrindo os dois.
+router.get('/admin/coverage', async (req, res, next) => {
   try {
     const { tenantId } = req.auth!;
-    res.json(await shifts.listOpenSessionsWithUser(tenantId));
+    res.json(await shifts.coberturaPorSetor(tenantId));
   } catch (err) {
     next(err);
   }

@@ -12,7 +12,8 @@
     "check:corridas": "tsx scripts/check-corridas.ts",
     "check:distribuicao": "tsx scripts/check-distribuicao-concorrente.ts",
     "check:multiprocesso": "tsx scripts/check-rodizio-multiprocesso.ts",
-    "cron:agendar": "tsx scripts/agendar-cron.ts"
+    "cron:agendar": "tsx scripts/agendar-cron.ts",
+    "check:plantao-setor": "tsx scripts/check-plantao-por-setor.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
