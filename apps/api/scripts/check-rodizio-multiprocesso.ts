@@ -73,6 +73,12 @@ async function main() {
       where: { userId: { in: envolvidos }, department: { tenantId } },
       select: { userId: true, departmentId: true },
     });
+    // Sem setor não há escala, sem escala não há plantão, e sem plantão os dois
+    // processos não disputam nada: o check diria PASSOU tendo medido nada.
+    const semSetor = envolvidos.filter((id) => !setores.some((s) => s.userId === id));
+    if (semSetor.length > 0) {
+      throw new Error(`atendentes sem setor (${semSetor.join(', ')}): o check mediria nada`);
+    }
     await prisma.shift.deleteMany({ where: { tenantId, userId: { in: envolvidos } } });
     await prisma.shift.createMany({
       data: setores.flatMap(({ userId, departmentId }) =>

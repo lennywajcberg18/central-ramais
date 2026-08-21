@@ -613,6 +613,7 @@ function ShiftEditor({
 export default function AgentesPage() {
   const [users, setUsers] = useState<UserRow[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
+  const [todosSetores, setTodosSetores] = useState<Department[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -650,7 +651,13 @@ export default function AgentesPage() {
         api<OpenShift[]>('/admin/shift-sessions'),
       ]);
       setUsers(u);
+      // Os ativos são para ESCOLHER setor (cadastro e edição de vínculo); a lista
+      // inteira é para NOMEAR setor. Desativar um setor não desfaz o vínculo de
+      // quem já estava nele, então sem os inativos aqui a aba da escala dessa
+      // pessoa apareceria sem nome — e com dois setores desativados seriam duas
+      // abas idênticas e indistinguíveis.
       setDepartments(d.filter((x) => x.active));
+      setTodosSetores(d);
       setEmPlantao(plantoes);
     } catch (err) {
       setLoadError(errorText(err, 'Não foi possível carregar a equipe agora.'));
@@ -718,14 +725,33 @@ export default function AgentesPage() {
       setEditError('Escolha ao menos um setor.');
       return;
     }
+    const alvo = users.find((u) => u.id === editing.id);
+    const nome = alvo?.name ?? 'a pessoa';
+    const saiuDeAlgum = (alvo?.departmentIds ?? []).some((id) => !editing.deptIds.includes(id));
     setSavingDepts(true);
     try {
-      await api(`/admin/users/${editing.id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ departmentIds: editing.deptIds }),
-      });
+      const r = await api<{ releasedConversations: number; shiftEnded: boolean }>(
+        `/admin/users/${editing.id}`,
+        { method: 'PATCH', body: JSON.stringify({ departmentIds: editing.deptIds }) }
+      );
+
+      // Tirar alguém de um setor apaga a escala dela naquele setor e pode
+      // encerrar o plantão em curso. As duas coisas são invisíveis na tela — sem
+      // dizer aqui, o admin que desmarcou por engano e remarcou em seguida acha
+      // que não aconteceu nada e só descobre quando a pessoa não consegue entrar.
+      const partes = [`Setores de ${nome} atualizados.`];
+      if (saiuDeAlgum) partes.push('A escala nos setores removidos foi apagada.');
+      if (r.shiftEnded) partes.push('O plantão em curso foi encerrado.');
+      if (r.releasedConversations > 0) {
+        partes.push(
+          r.releasedConversations === 1
+            ? '1 conversa voltou para a fila.'
+            : `${r.releasedConversations} conversas voltaram para a fila.`
+        );
+      }
+
       setEditing(null);
-      setNotice('Setores atualizados.');
+      setNotice(partes.join(' '));
       await load();
     } catch (err) {
       setEditError(errorText(err, 'Não foi possível salvar os setores agora.'));
@@ -1201,10 +1227,18 @@ export default function AgentesPage() {
       {shiftUser && (
         <ShiftEditor
           user={shiftUser}
-          setores={shiftUser.departmentIds.map((id) => ({
-            id,
-            name: departments.find((d) => d.id === id)?.name ?? 'Setor',
-          }))}
+          setores={shiftUser.departmentIds.map((id) => {
+            const setor = todosSetores.find((d) => d.id === id);
+            return {
+              id,
+              // Setor desativado continua aparecendo, e marcado. Bloquear a
+              // edição dele faria o salvamento inteiro falhar (o payload leva
+              // todos os setores da pessoa); escondê-lo apagaria a escala dele
+              // no primeiro "Salvar". A escala fica dormente e volta a valer se
+              // o setor for reativado.
+              name: setor ? (setor.active ? setor.name : `${setor.name} (fora do ar)`) : 'Setor',
+            };
+          })}
           setorAtivo={shiftSetorAtivo}
           onSetorChange={setShiftSetorAtivo}
           porSetor={shiftPorSetor}

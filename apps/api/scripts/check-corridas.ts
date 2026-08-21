@@ -56,6 +56,12 @@ async function escalaIntegral(tenantId: string, userId: string) {
     where: { userId, department: { tenantId } },
     select: { departmentId: true },
   });
+  // Sem setor não há escala a criar, e sem escala a pessoa não entra de plantão:
+  // a corrida sob teste nunca acontece e o check imprime PASSOU tendo medido
+  // nada. Falhar alto é o único jeito de o resultado continuar valendo.
+  if (setores.length === 0) {
+    throw new Error(`atendente ${userId} não está em nenhum setor: o check mediria nada`);
+  }
   await prisma.shift.deleteMany({ where: { tenantId, userId } });
   await prisma.shift.createMany({
     data: setores.flatMap(({ departmentId }) =>

@@ -88,6 +88,13 @@ async function main() {
       where: { userId: { in: envolvidos }, department: { tenantId } },
       select: { userId: true, departmentId: true },
     });
+    // Quem não tem setor não ganha escala, não entra de plantão e não disputa
+    // nada — o check passaria sem ter medido a corrida. Mesmo motivo do
+    // comentário acima: teste que passa por engano é pior que teste que falha.
+    const semSetor = envolvidos.filter((id) => !setores.some((s) => s.userId === id));
+    if (semSetor.length > 0) {
+      throw new Error(`atendentes sem setor (${semSetor.join(', ')}): o check mediria nada`);
+    }
     await prisma.shift.deleteMany({ where: { tenantId, userId: { in: envolvidos } } });
     await prisma.shift.createMany({
       data: setores.flatMap(({ userId, departmentId }) =>

@@ -56,17 +56,24 @@ export async function replaceSchedule(
 
 // Chamada depois que o admin troca a escala. Escala nova pode ter tirado a
 // pessoa do plantão (encerra) ou mudado a hora de saída (reajusta o fim).
-export async function reevaluateShift(tenantId: string, userId: string): Promise<void> {
+//
+// Devolve o resultado do encerramento quando encerrou, e null quando só
+// reajustou ou não havia nada aberto. Quem chama precisa desse número: encerrar
+// solta conversas, e a rota que só reportasse as que ela mesma soltou diria
+// "nenhuma conversa devolvida" com duas de volta na fila.
+export async function reevaluateShift(
+  tenantId: string,
+  userId: string
+): Promise<EndShiftResult | null> {
   // TODAS as sessões abertas, não a mais recente: uma órfã deixada por um login
   // duplo de antes desta correção sobreviveria ao encurtamento de escala com a
   // hora de saída antiga.
   const abertas = await shifts.listOpenSessionsForUser(tenantId, userId);
-  if (abertas.length === 0) return;
+  if (abertas.length === 0) return null;
 
   const { fim } = await coberturaAtual(tenantId, userId, new Date());
   if (!fim) {
-    await endShift(tenantId, userId, 'admin');
-    return;
+    return await endShift(tenantId, userId, 'admin');
   }
   for (const aberta of abertas) {
     // O teto conta do início do plantão, não do momento em que a escala foi
@@ -77,6 +84,7 @@ export async function reevaluateShift(tenantId: string, userId: string): Promise
       await shifts.updateSessionEnd(tenantId, aberta.id, novoFim);
     }
   }
+  return null;
 }
 
 // Abre (ou reaproveita) o plantão do atendente. Reaproveitar importa: entrar

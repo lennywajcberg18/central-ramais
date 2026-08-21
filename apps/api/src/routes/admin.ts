@@ -20,7 +20,7 @@ import {
   closeConversation,
 } from '../services/lifecycle.service';
 import { computeMetrics } from '../services/metrics.service';
-import { reevaluateShift, replaceSchedule } from '../services/shift.service';
+import { reevaluateShift, reofferConversations, replaceSchedule } from '../services/shift.service';
 import { buildPrefillText, generateEntryCode, generateSlug } from '../utils/ids';
 import { dayRangeInZone } from '../utils/shiftClock';
 import { normalizeKeyword } from '../utils/text';
@@ -324,9 +324,32 @@ router.patch('/admin/users/:id', async (req, res, next) => {
     // faixa continuaria com a sessão aberta e com acesso por até 16 horas,
     // regido por uma escala que não existe mais. É o mesmo passo que
     // `replaceSchedule` dá depois de salvar a escala — pelo mesmo motivo.
-    if (departmentIds) await reevaluateShift(tenantId, target.id);
+    //
+    // O `endShift` de dentro solta MAIS conversas que as do `users.update` (que
+    // só soltou as que ficaram fora do novo escopo de setores) e devolve quantas
+    // foram. Descartar esse número faria a tela dizer "0 conversas devolvidas"
+    // enquanto duas voltaram para a fila e a pessoa foi deslogada.
+    let encerrouPlantao = false;
+    let devolvidas = result.releasedConversations;
+    if (departmentIds) {
+      const fim = await reevaluateShift(tenantId, target.id);
+      encerrouPlantao = fim !== null;
+      devolvidas += fim?.releasedConversations ?? 0;
+    }
 
-    res.json({ ok: true, releasedConversations: result.releasedConversations });
+    // As conversas soltas pelo `users.update` — as que ficaram fora do novo
+    // escopo — nunca eram reoferecidas: ficavam em `open`, que é o único estado
+    // que o job de inatividade não varre, mesmo com um colega de plantão no
+    // setor. É o contrato que o comentário de `reofferConversations` descreve e
+    // que esta rota nunca cumpriu; com o `endShift` agora reoferecendo as dele,
+    // deixar metade sem reoferta seria pior que os dois lados iguais.
+    await reofferConversations(tenantId, result.releasedConversationIds);
+
+    res.json({
+      ok: true,
+      releasedConversations: devolvidas,
+      shiftEnded: encerrouPlantao,
+    });
   } catch (err) {
     next(err);
   }
