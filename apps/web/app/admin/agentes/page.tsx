@@ -318,10 +318,10 @@ interface ShiftRow {
   endMinute: number;
 }
 
-interface OpenShift {
-  id: string;
-  endsAt: string;
-  user: { id: string; name: string };
+interface CoberturaDeSetor {
+  departmentId: string;
+  name: string;
+  pessoas: Array<{ userId: string; name: string; endsAt: string }>;
 }
 
 const DIAS = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
@@ -640,7 +640,7 @@ export default function AgentesPage() {
   const [shiftLoading, setShiftLoading] = useState(false);
   const [savingShift, setSavingShift] = useState(false);
   const [shiftError, setShiftError] = useState<string | null>(null);
-  const [emPlantao, setEmPlantao] = useState<OpenShift[]>([]);
+  const [cobertura, setCobertura] = useState<CoberturaDeSetor[]>([]);
 
   const load = useCallback(async () => {
     setLoadError(null);
@@ -648,7 +648,7 @@ export default function AgentesPage() {
       const [u, d, plantoes] = await Promise.all([
         api<UserRow[]>('/admin/users'),
         api<Department[]>('/admin/departments'),
-        api<OpenShift[]>('/admin/shift-sessions'),
+        api<CoberturaDeSetor[]>('/admin/coverage'),
       ]);
       setUsers(u);
       // Os ativos são para ESCOLHER setor (cadastro e edição de vínculo); a lista
@@ -658,7 +658,7 @@ export default function AgentesPage() {
       // abas idênticas e indistinguíveis.
       setDepartments(d.filter((x) => x.active));
       setTodosSetores(d);
-      setEmPlantao(plantoes);
+      setCobertura(plantoes);
     } catch (err) {
       setLoadError(errorText(err, 'Não foi possível carregar a equipe agora.'));
     } finally {
@@ -959,25 +959,44 @@ export default function AgentesPage() {
             <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
               De plantão agora
             </p>
-            {emPlantao.length === 0 ? (
-              <p className="mt-1 text-sm text-ink-600">
-                Ninguém. Conversas novas ficam esperando na fila do setor até alguém entrar.
-              </p>
+            {cobertura.length === 0 ? (
+              <p className="mt-1 text-sm text-ink-600">Nenhum setor ativo no hospital.</p>
             ) : (
-              <ul className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1">
-                {emPlantao.map((p) => (
-                  <li key={p.id} className="flex items-center gap-1.5 text-sm text-ink-700">
-                    <Dot tone="success" />
-                    {p.user.name}
-                    <span className="text-ink-400">
-                      até{' '}
-                      {new Date(p.endsAt).toLocaleTimeString('pt-BR', {
-                        hour: '2-digit',
-                        minute: '2-digit',
-                      })}
-                    </span>
-                  </li>
-                ))}
+              /* Setor a setor, e não uma lista de nomes: "cinco de plantão" não
+                 diz nada se as cinco estão na Recepção e o CT está vazio. É o
+                 setor sem ninguém que precisa saltar aos olhos. */
+              <ul className="mt-1.5 space-y-1">
+                {cobertura.map((setor) => {
+                  const vazio = setor.pessoas.length === 0;
+                  return (
+                    <li
+                      key={setor.departmentId}
+                      className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm"
+                    >
+                      <Dot tone={vazio ? 'warning' : 'success'} />
+                      <span className={vazio ? 'font-medium text-amber-800' : 'text-ink-800'}>
+                        {setor.name}
+                      </span>
+                      {vazio ? (
+                        <span className="text-amber-700">
+                          sem ninguém — as conversas ficam esperando na fila
+                        </span>
+                      ) : (
+                        <span className="text-ink-600">
+                          {setor.pessoas
+                            .map(
+                              (p) =>
+                                `${p.name} (até ${new Date(p.endsAt).toLocaleTimeString('pt-BR', {
+                                  hour: '2-digit',
+                                  minute: '2-digit',
+                                })})`
+                            )
+                            .join(', ')}
+                        </span>
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </div>

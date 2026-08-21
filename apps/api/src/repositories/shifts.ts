@@ -130,19 +130,122 @@ export function listExpiredSessions(tenantId: string, at: Date) {
   });
 }
 
-export function listOpenSessionsWithUser(tenantId: string) {
-  return prisma.shiftSession.findMany({
-    where: { tenantId, endedAt: null, endsAt: { gt: new Date() } },
-    include: {
-      user: {
-        select: {
-          id: true,
-          name: true,
-          availability: true,
-          departments: { select: { department: { select: { id: true, name: true } } } },
-        },
-      },
+
+// ---------- cobertura: em quais setores o plantão está de pé ----------
+
+// Põe o plantão de pé nos setores pedidos, cada um com a sua hora de sair.
+//
+// `skipDuplicates` porque o índice parcial `cobertura_aberta_unica` derruba a
+// segunda linha aberta do mesmo (plantão, setor): dois logins simultâneos da
+// mesma pessoa chegam aqui juntos, e a intenção dos dois é a mesma. Ignorar o
+// repetido é o comportamento certo — errado seria contar a pessoa duas vezes no
+// limite do setor e barrar um colega legítimo.
+export function abrirCoberturas(
+  tenantId: string,
+  shiftSessionId: string,
+  setores: Array<{ departmentId: string; endsAt: Date }>,
+  client: Prisma.TransactionClient = prisma
+) {
+  return client.shiftSessionDepartment.createMany({
+    data: setores.map((s) => ({ tenantId, shiftSessionId, ...s })),
+    skipDuplicates: true,
+  });
+}
+
+export function listCoberturasAbertas(
+  tenantId: string,
+  shiftSessionId: string,
+  client: Prisma.TransactionClient = prisma
+) {
+  return client.shiftSessionDepartment.findMany({
+    where: { tenantId, shiftSessionId, endedAt: null },
+    orderBy: { endsAt: 'asc' },
+  });
+}
+
+
+export function fecharCoberturasDaSessao(
+  tenantId: string,
+  shiftSessionId: string,
+  client: Prisma.TransactionClient = prisma
+) {
+  return client.shiftSessionDepartment.updateMany({
+    where: { tenantId, shiftSessionId, endedAt: null },
+    data: { endedAt: new Date() },
+  });
+}
+
+export function ajustarFimDaCobertura(
+  tenantId: string,
+  id: string,
+  endsAt: Date,
+  client: Prisma.TransactionClient = prisma
+) {
+  return client.shiftSessionDepartment.updateMany({
+    where: { id, tenantId, endedAt: null },
+    data: { endsAt },
+  });
+}
+
+// Varredura do job: coberturas de pé cujo horário já passou, com o dono junto —
+// é o `user_id` que diz de quem são as conversas a devolver naquele setor.
+export function listCoberturasVencidas(tenantId: string, at: Date) {
+  return prisma.shiftSessionDepartment.findMany({
+    where: { tenantId, endedAt: null, endsAt: { lte: at } },
+    include: { session: { select: { id: true, userId: true, endedAt: true } } },
+  });
+}
+
+export interface CoberturaDeSetor {
+  departmentId: string;
+  name: string;
+  pessoas: Array<{ userId: string; name: string; endsAt: Date }>;
+}
+
+// Quem está de plantão em cada setor agora.
+//
+// Devolve TODOS os setores ativos, inclusive os vazios — é o vazio que interessa
+// ao aviso de setor descoberto, e uma consulta que parte das coberturas não traz
+// linha nenhuma para o setor onde não há ninguém, que é justamente o que a tela
+// precisa gritar.
+export async function coberturaPorSetor(
+  tenantId: string,
+  at: Date = new Date()
+): Promise<CoberturaDeSetor[]> {
+  const setores = await prisma.department.findMany({
+    where: { tenantId, active: true },
+    select: { id: true, name: true },
+    orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+  });
+
+  const coberturas = await prisma.shiftSessionDepartment.findMany({
+    where: {
+      tenantId,
+      endedAt: null,
+      endsAt: { gt: at },
+      // Plantão encerrado com cobertura ainda aberta é resto de corrida (o
+      // encerramento fecha as duas coisas na mesma transação). Contar essa
+      // pessoa mostraria como coberto um setor onde já não há ninguém.
+      session: { endedAt: null },
+    },
+    select: {
+      departmentId: true,
+      endsAt: true,
+      session: { select: { userId: true, user: { select: { name: true } } } },
     },
     orderBy: { endsAt: 'asc' },
   });
+
+  const porSetor = new Map<string, CoberturaDeSetor['pessoas']>();
+  for (const c of coberturas) {
+    const lista = porSetor.get(c.departmentId) ?? [];
+    lista.push({ userId: c.session.userId, name: c.session.user.name, endsAt: c.endsAt });
+    porSetor.set(c.departmentId, lista);
+  }
+
+  return setores.map((s) => ({
+    departmentId: s.id,
+    name: s.name,
+    pessoas: porSetor.get(s.id) ?? [],
+  }));
 }

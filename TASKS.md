@@ -292,9 +292,11 @@ supervisor, que é fundação do escalonamento.
 - [x] **T5.1 escala por setor** — `shifts` ganha `department_id`; a escala passa
       a dizer ONDE a pessoa atende naquele turno, não só quando. Editor do
       painel com uma aba por setor.
-- [ ] **T5.2 plantão por setor, limite de 3 e cobertura** — quem está de plantão
-      passa a estar de plantão EM setores; máximo 3 atendentes por setor;
-      consulta de setor descoberto.
+- [x] **T5.2 plantão por setor** — quem entra de plantão entra EM setores, cada
+      um com a sua hora de sair. Sair de um setor devolve só as conversas dele.
+      O painel mostra a cobertura setor a setor, com o vazio em destaque.
+- [ ] **T5.2b limite de 3 por setor** — barra o quarto na entrada do plantão;
+      o supervisor do setor não conta.
 - [ ] **T5.3 papéis de supervisor** — `supervisor_setor` e `supervisor_hospital`.
       O supervisor de setor é a 4ª pessoa: não conta no limite de 3.
 - [ ] **T5.4 oferta ao setor e escalonamento** — 0 min atendente da vez, 3 min
