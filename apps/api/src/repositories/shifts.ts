@@ -2,6 +2,7 @@ import { Prisma, ShiftEndReason } from '@prisma/client';
 import { prisma } from '../prisma';
 
 export interface ShiftInput {
+  departmentId: string;
   weekday: number;
   startMinute: number;
   endMinute: number;
@@ -10,7 +11,7 @@ export interface ShiftInput {
 export function listForUser(tenantId: string, userId: string) {
   return prisma.shift.findMany({
     where: { tenantId, userId, active: true },
-    orderBy: [{ weekday: 'asc' }, { startMinute: 'asc' }],
+    orderBy: [{ weekday: 'asc' }, { startMinute: 'asc' }, { departmentId: 'asc' }],
   });
 }
 
@@ -23,6 +24,14 @@ export function listForTenant(tenantId: string) {
 
 // A escala é substituída inteira: editar faixa a faixa não vale a complexidade
 // enquanto o painel manda a semana toda de uma vez.
+//
+// "Inteira" continua sendo a pessoa TODA, todos os setores dela — e não um setor
+// por vez. Apagar só o setor que veio no payload parece mais cirúrgico e é a
+// armadilha: o editor mostraria a escala de um setor, o admin salvaria, e a
+// escala da mesma pessoa nos outros setores sumiria em silêncio; ela só
+// descobriria no próximo login, recusada com "fora do horário de plantão". Com
+// o payload carregando todos os setores, o que está na tela é exatamente o que
+// fica no banco.
 export async function replaceForUser(
   tenantId: string,
   userId: string,

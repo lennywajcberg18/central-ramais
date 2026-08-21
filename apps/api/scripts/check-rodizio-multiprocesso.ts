@@ -67,10 +67,23 @@ async function main() {
 
   let empates = 0;
   try {
+    // Escala integral em TODOS os setores de cada um: a escala é por setor, e
+    // cobrir só um tiraria o rodízio dos demais do ar durante o check.
+    const setores = await prisma.userDepartment.findMany({
+      where: { userId: { in: envolvidos }, department: { tenantId } },
+      select: { userId: true, departmentId: true },
+    });
     await prisma.shift.deleteMany({ where: { tenantId, userId: { in: envolvidos } } });
     await prisma.shift.createMany({
-      data: envolvidos.flatMap((userId) =>
-        Array.from({ length: 7 }, (_, weekday) => ({ tenantId, userId, weekday, startMinute: 0, endMinute: 1440 }))
+      data: setores.flatMap(({ userId, departmentId }) =>
+        Array.from({ length: 7 }, (_, weekday) => ({
+          tenantId,
+          userId,
+          departmentId,
+          weekday,
+          startMinute: 0,
+          endMinute: 1440,
+        }))
       ),
     });
     await prisma.shiftSession.deleteMany({ where: { tenantId, userId: { in: envolvidos } } });

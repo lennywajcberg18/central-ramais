@@ -283,13 +283,50 @@ recebendo chamado do hospital depois que o plantão acaba.**
       **Chamar outro setor** → Faturamento. Entrar como quem atende o Faturamento
       e conferir que a conversa aparece do outro lado.
 
-### Backlog da reunião — ainda sem task
-- Número máximo de atendentes de plantão por setor ("no CT são três; chegou o
-  quarto, um tem que sair")
-- Nome e celular de quem é de fora no primeiro acesso — **contradiz a regra 7
-  do CLAUDE.md** (zero fricção); decidir antes de implementar
-- Mensagem de voz; ligação depois
-- Log de agilidade: quem chamou, quem atendeu e **quem não atendeu**
+## Sprint 3 — decisões da reunião de 21/08
+
+Tudo aqui saiu de decisão do cliente, registrada. Ordem por dependência: a
+escala por setor é fundação da contagem por setor, que é fundação do
+supervisor, que é fundação do escalonamento.
+
+- [x] **T5.1 escala por setor** — `shifts` ganha `department_id`; a escala passa
+      a dizer ONDE a pessoa atende naquele turno, não só quando. Editor do
+      painel com uma aba por setor.
+- [ ] **T5.2 plantão por setor, limite de 3 e cobertura** — quem está de plantão
+      passa a estar de plantão EM setores; máximo 3 atendentes por setor;
+      consulta de setor descoberto.
+- [ ] **T5.3 papéis de supervisor** — `supervisor_setor` e `supervisor_hospital`.
+      O supervisor de setor é a 4ª pessoa: não conta no limite de 3.
+- [ ] **T5.4 oferta ao setor e escalonamento** — 0 min atendente da vez, 3 min
+      oferta aos 3 do setor (quem responder primeiro fica), 6 min supervisor do
+      setor, 9 min supervisor do hospital.
+- [ ] **T5.5 áudio e imagem** — recebe os dois; áudio entregue com transcrição
+      (OpenAI); mídia NÃO é copiada para servidor nosso e é apagada no
+      encerramento, com o histórico registrando que existiu.
+- [ ] **T5.6 nome no primeiro acesso** — nome completo pedido antes do menu;
+      contato identificado por nome + telefone. Link nominal não pergunta.
+- [ ] **T5.7 log de agilidade** — quem chamou, quem atendeu e quem NÃO atendeu.
+      Só passa a existir depois da T5.4: hoje não há registro de oferta.
+- [ ] **T5.8 telas de supervisor** — aviso "setor X sem atendente" nas telas dos
+      supervisores do setor e do hospital.
+- [ ] **T5.9 um número de WhatsApp por hospital** — trava no banco.
+- [ ] **T5.10 realtime no lugar do polling** — pendência antiga, 6 telas.
+
+### Decidido na reunião, para não reabrir
+- Um número de WhatsApp por hospital.
+- Nunca fica setor vazio: mínimo 1 atendente logado por setor. Ninguém é
+  impedido de sair — o vazio vira aviso na tela dos supervisores.
+- Limite de 3 por setor; o supervisor do setor é uma 4ª pessoa.
+- Escalonamento 0/3/6/9 minutos, nesta ordem: atendente → os 3 do setor →
+  supervisor do setor → supervisor do hospital.
+- Imagem: recebe mas não guarda (opção 2). O atendente vê durante o
+  atendimento; apagada no encerramento; o histórico registra que houve.
+- Nome completo pedido no primeiro acesso. **Isto revoga a regra 7 do
+  CLAUDE.md** (zero fricção) — atualizar a regra junto com a T5.6.
+
+### Ainda sem decisão
+- Ligação (voz ao vivo) — o Marcelo pediu "depois".
+- Provedor: Twilio ou Evolution. A escolha decide onde a transcrição roda.
 
 ---
 

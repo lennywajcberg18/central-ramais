@@ -48,17 +48,26 @@ function registrar(nome: string, falhas: number, total: number) {
   console.log(`  => ${marca}: ${falhas} de ${total} rodadas com problema\n`);
 }
 
-// escala integral, para o atendente poder entrar de plantão a qualquer hora
+// escala integral, para o atendente poder entrar de plantão a qualquer hora.
+// Em TODOS os setores dele: a escala é por setor, e cobrir só um deixaria o
+// rodízio dos outros sem ninguém — o check acusaria uma corrida que não existe.
 async function escalaIntegral(tenantId: string, userId: string) {
+  const setores = await prisma.userDepartment.findMany({
+    where: { userId, department: { tenantId } },
+    select: { departmentId: true },
+  });
   await prisma.shift.deleteMany({ where: { tenantId, userId } });
   await prisma.shift.createMany({
-    data: Array.from({ length: 7 }, (_, weekday) => ({
-      tenantId,
-      userId,
-      weekday,
-      startMinute: 0,
-      endMinute: 1440,
-    })),
+    data: setores.flatMap(({ departmentId }) =>
+      Array.from({ length: 7 }, (_, weekday) => ({
+        tenantId,
+        userId,
+        departmentId,
+        weekday,
+        startMinute: 0,
+        endMinute: 1440,
+      }))
+    ),
   });
 }
 

@@ -80,12 +80,21 @@ async function main() {
     // recusar a sessão dele, as duas conversas caírem no diego e o script acusar
     // empate — um teste que passa de manhã e falha à noite é pior que um teste que
     // falha sempre, porque ninguém confia nele depois.
+    //
+    // A escala é por setor, então a faixa integral é replicada em todos os
+    // setores de cada um: cobrir só um deixaria o rodízio dos demais sem
+    // ninguém de plantão e o check mediria outra coisa.
+    const setores = await prisma.userDepartment.findMany({
+      where: { userId: { in: envolvidos }, department: { tenantId } },
+      select: { userId: true, departmentId: true },
+    });
     await prisma.shift.deleteMany({ where: { tenantId, userId: { in: envolvidos } } });
     await prisma.shift.createMany({
-      data: envolvidos.flatMap((userId) =>
+      data: setores.flatMap(({ userId, departmentId }) =>
         Array.from({ length: 7 }, (_, weekday) => ({
           tenantId,
           userId,
+          departmentId,
           weekday,
           startMinute: 0,
           endMinute: 1440,
